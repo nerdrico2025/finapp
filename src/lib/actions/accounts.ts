@@ -9,7 +9,6 @@ export interface AccountFormData {
   type: AccountType
   color: string
   initial_balance: number
-  currency: string
   include_in_total: boolean
 }
 
@@ -72,7 +71,6 @@ export async function createAccount(formData: AccountFormData) {
     color: formData.color,
     initial_balance: formData.initial_balance,
     balance: formData.initial_balance,
-    currency: formData.currency,
     include_in_total: formData.include_in_total,
     is_active: true,
   })
@@ -98,7 +96,6 @@ export async function updateAccount(id: string, formData: Partial<AccountFormDat
       name: formData.name,
       type: formData.type,
       color: formData.color,
-      currency: formData.currency,
       include_in_total: formData.include_in_total,
     })
     .eq('id', id)

@@ -56,7 +56,6 @@ export interface Database {
           type: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance: number
           initial_balance: number
-          currency: string
           color: string | null
           icon: string | null
           is_active: boolean
@@ -71,7 +70,6 @@ export interface Database {
           type: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance: number
           initial_balance: number
-          currency?: string
           color?: string | null
           icon?: string | null
           is_active?: boolean
@@ -83,7 +81,6 @@ export interface Database {
           name?: string
           type?: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance?: number
-          currency?: string
           color?: string | null
           icon?: string | null
           is_active?: boolean

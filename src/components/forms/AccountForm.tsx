@@ -28,7 +28,6 @@ const accountSchema = z.object({
   type: z.enum(['checking', 'savings', 'credit_card', 'investment', 'wallet', 'other']),
   color: z.string().min(1, 'Selecione uma cor'),
   initial_balance: z.string(),
-  currency: z.string(),
   include_in_total: z.boolean(),
 })
 
@@ -61,7 +60,6 @@ export function AccountForm({ defaultValues, onSubmit, onCancel, submitLabel = '
       type: defaultValues?.type ?? 'checking',
       color: defaultValues?.color ?? PRESET_COLORS[0],
       initial_balance: String(defaultValues?.initial_balance ?? 0),
-      currency: defaultValues?.currency ?? 'BRL',
       include_in_total: defaultValues?.include_in_total ?? true,
     },
   })
