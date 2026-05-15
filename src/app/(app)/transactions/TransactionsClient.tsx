@@ -108,7 +108,7 @@ export function TransactionsClient({
               className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
             >
               <Upload className="w-4 h-4" />
-              Importar CSV
+              Importar
             </button>
             <button
               onClick={() => setModal('create')}
@@ -305,7 +305,7 @@ export function TransactionsClient({
 
       {/* Import modal */}
       {modal === 'import' && (
-        <Modal title="Importar CSV" onClose={() => setModal('closed')} wide>
+        <Modal title="Importar transações" onClose={() => setModal('closed')} wide>
           <ImportCSVForm
             accounts={accounts}
             categories={categories}
