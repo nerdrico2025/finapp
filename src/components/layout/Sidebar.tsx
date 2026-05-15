@@ -121,7 +121,7 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           href="/settings"
           className={cn(
             'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-            pathname === '/settings' || pathname === '/settings/profile'
+            pathname.startsWith('/settings') && !pathname.startsWith('/settings/users')
               ? 'bg-emerald-50 text-emerald-700'
               : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
           )}
@@ -129,9 +129,9 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           <Settings
             className={cn(
               'w-4.5 h-4.5 shrink-0',
-              pathname === '/settings' || pathname === '/settings/profile' ? 'text-emerald-600' : 'text-gray-400'
+              pathname.startsWith('/settings') && !pathname.startsWith('/settings/users') ? 'text-emerald-600' : 'text-gray-400'
             )}
-            strokeWidth={pathname === '/settings' || pathname === '/settings/profile' ? 2.5 : 2}
+            strokeWidth={pathname.startsWith('/settings') && !pathname.startsWith('/settings/users') ? 2.5 : 2}
           />
           Configurações
         </Link>
