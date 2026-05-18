@@ -609,11 +609,19 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           </div>
 
           <div className="border border-gray-100 rounded-xl overflow-hidden">
-            <div className="overflow-x-auto max-h-80 overflow-y-auto">
-              <table className="w-full text-xs min-w-[580px]">
+            <div className="max-h-80 overflow-y-auto">
+              <table className="w-full table-fixed text-xs">
+                <colgroup>
+                  <col className="w-8" />
+                  <col className="w-24" />
+                  <col />
+                  <col className="w-36" />
+                  <col className="w-24" />
+                  <col className="w-24" />
+                </colgroup>
                 <thead className="bg-gray-50 sticky top-0 z-10">
                   <tr>
-                    <th className="px-2 py-2 w-8">
+                    <th className="px-2 py-2">
                       <input
                         type="checkbox"
                         checked={checkedRows.length === validCount && validCount > 0}
@@ -621,11 +629,11 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                       />
                     </th>
-                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Data</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Data</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Descrição</th>
-                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Categoria</th>
-                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Tipo</th>
-                    <th className="text-right px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Valor (R$)</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Categoria</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Tipo</th>
+                    <th className="text-right px-2 py-2 text-gray-500 font-medium">Valor</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
@@ -654,14 +662,15 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                       </td>
 
                       {/* Description */}
-                      <td className="px-2 py-1.5">
+                      <td className="px-2 py-1.5 overflow-hidden">
                         {row.error ? (
-                          <span className="text-red-500 italic text-xs" title={row.error}>{row.error}</span>
+                          <span className="block truncate text-red-500 italic" title={row.error}>{row.error}</span>
                         ) : (
                           <input
                             value={row.description}
                             onChange={e => updateRow(i, { description: e.target.value })}
-                            className="w-full min-w-[130px] bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors"
+                            title={row.description}
+                            className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors truncate"
                           />
                         )}
                       </td>
@@ -672,7 +681,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           value={row.categoryId ?? ''}
                           onChange={e => updateRow(i, { categoryId: e.target.value || null })}
                           disabled={!!row.error}
-                          className="w-full min-w-[110px] bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
+                          className="w-full bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
                         >
                           <option value="">— categoria —</option>
                           {allCategories.map(c => (
@@ -690,7 +699,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           })}
                           disabled={!!row.error}
                           className={cn(
-                            'px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors',
+                            'w-full px-1 py-0.5 rounded-full text-xs font-medium text-center transition-colors',
                             row.type === 'income'
                               ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
                               : 'bg-red-100 text-red-700 hover:bg-red-200',
@@ -715,7 +724,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                               updateRow(i, { amount: row.type === 'expense' ? -abs : abs })
                             }}
                             className={cn(
-                              'w-[80px] bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-right font-medium py-0.5 transition-colors',
+                              'w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-right font-medium py-0.5 transition-colors',
                               row.type === 'income' ? 'text-emerald-700' : 'text-red-700',
                             )}
                           />

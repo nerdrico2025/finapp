@@ -305,7 +305,7 @@ export function TransactionsClient({
 
       {/* Import modal */}
       {modal === 'import' && (
-        <Modal title="Importar transações" onClose={() => setModal('closed')} wide>
+        <Modal title="Importar transações" onClose={() => setModal('closed')} extraWide>
           <ImportCSVForm
             accounts={accounts}
             categories={categories}
@@ -400,18 +400,20 @@ function Modal({
   onClose,
   children,
   wide,
+  extraWide,
 }: {
   title: string
   onClose: () => void
   children: React.ReactNode
   wide?: boolean
+  extraWide?: boolean
 }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className={cn(
         'relative bg-white rounded-2xl shadow-xl p-6 max-h-[90vh] overflow-y-auto',
-        wide ? 'w-full max-w-lg' : 'w-full max-w-md'
+        extraWide ? 'w-full max-w-3xl' : wide ? 'w-full max-w-lg' : 'w-full max-w-md'
       )}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold text-gray-900">{title}</h2>
