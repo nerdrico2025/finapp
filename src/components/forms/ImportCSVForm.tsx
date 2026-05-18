@@ -75,19 +75,20 @@ function detectFormat(name: string): FileFormat | null {
 // ─── Column detection ─────────────────────────────────────────────────────────
 
 function detectColumns(headers: string[]): ColumnMapping {
-  const h = headers.map(c => String(c).toLowerCase().replace(/['"]/g, '').trim())
+  const h = headers.map(c => String(c ?? '').toLowerCase().replace(/['"]/g, '').trim())
   return {
     dateIdx: h.findIndex(c =>
-      c === 'data' || c === 'date' || c === 'dt' ||
-      (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao'))
+      c === 'data' || c === 'date' || c === 'dt' || c === 'data lançamento' || c === 'data lancamento' ||
+      (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao') && !c.includes('vencimento'))
     ),
     descIdx: h.findIndex(c =>
       c.includes('descri') || c.includes('histor') || c.includes('memo') ||
       c.includes('lancamento') || c.includes('lançamento') || c.includes('estabele') ||
-      c.includes('detalhe') || c.includes('narrat') || c.includes('complemento')
+      c.includes('detalhe') || c.includes('narrat') || c.includes('complemento') ||
+      c === 'nome' || c === 'favorecido' || c === 'pagador'
     ),
     amountIdx: h.findIndex(c =>
-      c === 'valor' || c === 'amount' || c === 'value' ||
+      c === 'valor' || c === 'amount' || c === 'value' || c === 'valor (r$)' ||
       c.includes('valor') || c.includes('amount') || c.includes('montante')
     ),
     creditIdx: h.findIndex(c =>
@@ -217,9 +218,12 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         const text = await file.text()
         const { headers, rawRows: raw } = csvToRaw(text)
         if (!headers.length) { setParseError('Arquivo CSV vazio ou inválido.'); setStep('idle'); return }
+        console.log('[CSV] Headers detectados:', headers)
         const detected = detectColumns(headers)
-        setRawHeaders(headers); setRawRows(raw); setColMap(detected)
-        if (isMappingValid(detected)) { setRows(applyMapping(headers, raw, detected)); setStep('preview') }
+        // Normalize each row to same length as headers
+        const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
+        setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
+        if (isMappingValid(detected)) { setRows(applyMapping(headers, normalizedRaw, detected)); setStep('preview') }
         else { setStep('mapping') }
       }
 
@@ -228,11 +232,35 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         const XLSX = await import('xlsx')
         const wb = XLSX.read(buffer, { type: 'array', raw: false })
         const sheet = wb.Sheets[wb.SheetNames[0]]
-        const all = XLSX.utils.sheet_to_json<string[]>(sheet, { header: 1, raw: false })
+        const all = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: '' })
         if (all.length < 2) { setParseError('Planilha vazia ou sem dados.'); setStep('idle'); return }
-        const headers = (all[0] as unknown[]).map(h => String(h ?? ''))
-        const raw = all.slice(1).map(r => (r as unknown[]).map(c => String(c ?? '')))
-        const detected = detectColumns(headers)
+
+        // Scan first 10 rows to find the actual header row (banks export metadata rows before headers)
+        let headerRowIdx = 0
+        let detected = detectColumns([])
+        for (let i = 0; i < Math.min(all.length - 1, 10); i++) {
+          const candidate = (all[i] as unknown[]).map(h => String(h ?? ''))
+          console.log(`[XLSX] Row ${i} candidata a cabeçalho:`, candidate)
+          const candidateMapping = detectColumns(candidate)
+          if (isMappingValid(candidateMapping)) {
+            headerRowIdx = i
+            detected = candidateMapping
+            console.log(`[XLSX] Cabeçalho detectado na linha ${i}:`, candidate, '| mapping:', candidateMapping)
+            break
+          }
+        }
+
+        const headers = (all[headerRowIdx] as unknown[]).map(h => String(h ?? ''))
+        // Normalize each row to same length as headers to avoid undefined access
+        const raw = (all.slice(headerRowIdx + 1) as unknown[][]).map(r =>
+          headers.map((_, i) => String(r[i] ?? ''))
+        )
+        console.log(`[XLSX] Total linhas de dados: ${raw.length} | Colunas: ${headers.join(', ')}`)
+
+        if (!isMappingValid(detected)) {
+          console.log('[XLSX] Mapeamento automático falhou, abrindo mapeamento manual. Headers:', headers)
+        }
+
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
         if (isMappingValid(detected)) { setRows(applyMapping(headers, raw, detected)); setStep('preview') }
         else { setStep('mapping') }
