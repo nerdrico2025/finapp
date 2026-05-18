@@ -25,9 +25,11 @@ export async function middleware(request: NextRequest) {
 
   const {
     data: { user },
+    error: authError,
   } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
+  console.log(`[middleware] ${pathname} | user.id: ${user?.id ?? 'null'} | authError: ${authError?.message ?? 'none'}`)
 
   const isAppRoute = pathname.startsWith('/dashboard') ||
     pathname.startsWith('/transactions') ||
