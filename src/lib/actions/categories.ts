@@ -45,7 +45,7 @@ export async function createCategory(formData: CategoryFormData) {
 
   if (!user) return { error: 'Não autenticado' }
 
-  const { error } = await supabase.from('categories').insert({
+  const { data: created, error } = await supabase.from('categories').insert({
     user_id: user.id,
     name: formData.name,
     type: formData.type,
@@ -53,12 +53,12 @@ export async function createCategory(formData: CategoryFormData) {
     color: formData.color || null,
     parent_id: formData.parent_id ?? null,
     is_default: false,
-  })
+  }).select().single()
 
-  if (error) return { error: error.message }
+  if (error) return { error: error.message, data: null }
 
   revalidatePath('/categories')
-  return { error: null }
+  return { error: null, data: created as Category }
 }
 
 export async function updateCategory(id: string, formData: Partial<CategoryFormData>) {

@@ -6,7 +6,7 @@ import {
 } from 'lucide-react'
 import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
-import { ensureDefaultCategoriesForImport, createCategory, getCategories } from '@/lib/actions/categories'
+import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category } from '@/types'
@@ -455,24 +455,26 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   async function saveNewCategory() {
     if (!newCat || !newCat.name.trim()) return
-    // Capture values before any state mutation to avoid stale closure issues
     const rowIdx = newCat.rowIdx
     const name = newCat.name.trim()
     const color = newCat.color
     setNewCat(c => c ? { ...c, saving: true } : c)
+
     const result = await createCategory({ name, type: 'expense', icon: '📦', color })
-    if (result.error) {
+    if (result.error || !result.data) {
+      console.log('[ImportCSVForm] Erro ao criar categoria:', result.error)
       setNewCat(c => c ? { ...c, saving: false } : c)
       return
     }
-    // Use getCategories for a guaranteed fresh list (bypasses ensureDefault's early-return)
-    const { data: fresh } = await getCategories()
-    if (fresh && fresh.length > 0) {
-      setAllCategories(fresh as Category[])
-      catsRef.current = fresh as Category[]
-      const created = fresh.find(c => c.name === name)
-      if (created) updateRow(rowIdx, { categoryId: created.id })
-    }
+
+    // Append directly to local state — no extra server call needed
+    const newCategory = result.data
+    console.log('[ImportCSVForm] Categorias antes:', catsRef.current.length)
+    const updated = [...catsRef.current, newCategory].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
+    console.log('[ImportCSVForm] Categorias depois:', updated.length, '| nova:', newCategory.name, newCategory.id)
+    setAllCategories(updated)
+    catsRef.current = updated
+    updateRow(rowIdx, { categoryId: newCategory.id })
     setNewCat(null)
   }
 
