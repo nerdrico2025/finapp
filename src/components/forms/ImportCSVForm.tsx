@@ -315,14 +315,16 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const catsRef = useRef<Category[]>(initialCategories)
   useEffect(() => { catsRef.current = allCategories }, [allCategories])
 
-  // Ensure defaults on mount (async, non-blocking)
+  // Only create defaults if user has no categories — never overwrite existing state
   useEffect(() => {
-    ensureDefaultCategoriesForImport().then(cats => {
-      if (cats.length > 0) {
-        setAllCategories(cats)
-        catsRef.current = cats
-      }
-    })
+    if (initialCategories.length === 0) {
+      ensureDefaultCategoriesForImport().then(cats => {
+        if (cats.length > 0) {
+          setAllCategories(cats)
+          catsRef.current = cats
+        }
+      })
+    }
   }, [])
 
   function updateRow(idx: number, patch: Partial<EditableRow>) {
@@ -461,15 +463,16 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setNewCat(c => c ? { ...c, saving: true } : c)
 
     const result = await createCategory({ name, type: 'expense', icon: '📦', color })
+    console.log('[ImportCSVForm] createCategory result:', JSON.stringify(result))
     if (result.error || !result.data) {
-      console.log('[ImportCSVForm] Erro ao criar categoria:', result.error)
+      console.log('[ImportCSVForm] Falhou — error:', result.error, '| data:', result.data)
       setNewCat(c => c ? { ...c, saving: false } : c)
       return
     }
 
-    // Append directly to local state — no extra server call needed
+    // Append directly — no second server call, no race condition
     const newCategory = result.data
-    console.log('[ImportCSVForm] Categorias antes:', catsRef.current.length)
+    console.log('[ImportCSVForm] Categorias antes:', catsRef.current.length, catsRef.current.map(c => c.name))
     const updated = [...catsRef.current, newCategory].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
     console.log('[ImportCSVForm] Categorias depois:', updated.length, '| nova:', newCategory.name, newCategory.id)
     setAllCategories(updated)
