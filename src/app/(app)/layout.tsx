@@ -9,12 +9,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const [{ data: profile }, { data: upcomingAlerts }] = await Promise.all([
+  const [{ data: rawProfile }, { data: upcomingAlerts }] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
     getUpcomingAlerts(3),
   ])
 
-  const isAdmin = (profile as { role?: string } | null)?.role === 'admin'
+  const profile = rawProfile
+    ? { ...rawProfile, email: rawProfile.email || user.email || '' }
+    : null
+
+  const isAdmin = profile?.role === 'admin'
 
   return (
     <AppShell

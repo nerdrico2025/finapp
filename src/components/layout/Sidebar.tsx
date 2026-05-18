@@ -102,17 +102,17 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
       <div className="px-3 pb-4 border-t border-gray-100 pt-3 space-y-0.5 shrink-0">
         {isAdmin && (
           <Link
-            href="/settings/users"
+            href="/admin"
             className={cn(
               'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-              pathname.startsWith('/settings/users')
+              pathname.startsWith('/admin')
                 ? 'bg-emerald-50 text-emerald-700'
                 : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
             )}
           >
             <Users
-              className={cn('w-4.5 h-4.5 shrink-0', pathname.startsWith('/settings/users') ? 'text-emerald-600' : 'text-gray-400')}
-              strokeWidth={pathname.startsWith('/settings/users') ? 2.5 : 2}
+              className={cn('w-4.5 h-4.5 shrink-0', pathname.startsWith('/admin') ? 'text-emerald-600' : 'text-gray-400')}
+              strokeWidth={pathname.startsWith('/admin') ? 2.5 : 2}
             />
             Usuários
           </Link>
@@ -121,7 +121,7 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           href="/settings"
           className={cn(
             'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-            pathname.startsWith('/settings') && !pathname.startsWith('/settings/users')
+            pathname.startsWith('/settings')
               ? 'bg-emerald-50 text-emerald-700'
               : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
           )}
@@ -129,9 +129,9 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           <Settings
             className={cn(
               'w-4.5 h-4.5 shrink-0',
-              pathname.startsWith('/settings') && !pathname.startsWith('/settings/users') ? 'text-emerald-600' : 'text-gray-400'
+              pathname.startsWith('/settings') ? 'text-emerald-600' : 'text-gray-400'
             )}
-            strokeWidth={pathname.startsWith('/settings') && !pathname.startsWith('/settings/users') ? 2.5 : 2}
+            strokeWidth={pathname.startsWith('/settings') ? 2.5 : 2}
           />
           Configurações
         </Link>

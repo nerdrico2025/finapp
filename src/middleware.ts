@@ -36,7 +36,8 @@ export async function middleware(request: NextRequest) {
     pathname.startsWith('/budgets') ||
     pathname.startsWith('/goals') ||
     pathname.startsWith('/alerts') ||
-    pathname.startsWith('/settings')
+    pathname.startsWith('/settings') ||
+    pathname.startsWith('/admin')
 
   const isAuthRoute = pathname === '/login' || pathname === '/register'
 
