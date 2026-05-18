@@ -102,8 +102,19 @@ function parsedToEditable(parsed: ParsedRow[], categories: Category[]): Editable
 function parseAmount(raw: string): number {
   const s = (raw ?? '').trim()
   if (!s) return 0
-  if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
-  return parseFloat(s.replace(/,/g, '')) || 0
+  const hasComma = s.includes(',')
+  const hasDot = s.includes('.')
+  if (hasComma && hasDot) {
+    // BR format: 1.913,44 — dot is thousands separator
+    return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
+  }
+  if (hasComma) {
+    // Comma-only: could be 1913,44 (BR decimal) or 1,913 (US thousands)
+    // Treat as BR decimal (most common in BTG exports)
+    return parseFloat(s.replace(',', '.')) || 0
+  }
+  // Dot-only or plain integer: 1913.44 or 1913
+  return parseFloat(s) || 0
 }
 
 function normalizeDate(raw: string): string {
