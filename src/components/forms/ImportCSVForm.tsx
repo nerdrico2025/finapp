@@ -16,6 +16,7 @@ import type { Account, Category } from '@/types'
 interface ColumnMapping {
   dateIdx: number
   descIdx: number
+  desc2Idx: number  // secondary description column (e.g. BTG "Transação")
   amountIdx: number
   creditIdx: number
   debitIdx: number
@@ -49,7 +50,9 @@ function parseAmount(raw: string): number {
 }
 
 function normalizeDate(raw: string): string {
-  const s = (raw ?? '').trim()
+  // Strip time portion from datetime strings like "04/04/2026 18:24" or "2026-04-04T18:24:00"
+  const s = (raw ?? '').trim().split(/[\sT]/)[0]
+  if (!s || s.toLowerCase() === 'nan') return ''
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
     const [d, m, y] = s.split('/'); return `${y}-${m}-${d}`
@@ -76,17 +79,30 @@ function detectFormat(name: string): FileFormat | null {
 
 function detectColumns(headers: string[]): ColumnMapping {
   const h = headers.map(c => String(c ?? '').toLowerCase().replace(/['"]/g, '').trim())
+
+  const dateIdx = h.findIndex(c =>
+    c === 'data' || c === 'date' || c === 'dt' || c === 'data lançamento' || c === 'data lancamento' ||
+    c === 'data e hora' || c === 'data/hora' ||
+    (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao') && !c.includes('vencimento'))
+  )
+
+  // Primary description: name/establishment/memo
+  const descIdx = h.findIndex(c =>
+    c.includes('descri') || c.includes('histor') || c.includes('memo') ||
+    c.includes('lancamento') || c.includes('lançamento') || c.includes('estabele') ||
+    c.includes('detalhe') || c.includes('narrat') || c.includes('complemento') ||
+    c === 'nome' || c === 'favorecido' || c === 'pagador'
+  )
+
+  // Secondary description: transaction type (BTG "Transação", "Categoria")
+  const desc2Idx = h.findIndex((c, i) =>
+    i !== descIdx && (c === 'transação' || c === 'transacao' || c.includes('transaç') || c === 'categoria' || c === 'tipo')
+  )
+
   return {
-    dateIdx: h.findIndex(c =>
-      c === 'data' || c === 'date' || c === 'dt' || c === 'data lançamento' || c === 'data lancamento' ||
-      (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao') && !c.includes('vencimento'))
-    ),
-    descIdx: h.findIndex(c =>
-      c.includes('descri') || c.includes('histor') || c.includes('memo') ||
-      c.includes('lancamento') || c.includes('lançamento') || c.includes('estabele') ||
-      c.includes('detalhe') || c.includes('narrat') || c.includes('complemento') ||
-      c === 'nome' || c === 'favorecido' || c === 'pagador'
-    ),
+    dateIdx,
+    descIdx,
+    desc2Idx,
     amountIdx: h.findIndex(c =>
       c === 'valor' || c === 'amount' || c === 'value' || c === 'valor (r$)' ||
       c.includes('valor') || c.includes('amount') || c.includes('montante')
@@ -131,15 +147,20 @@ function csvToRaw(content: string): { headers: string[]; rawRows: string[][] } {
 }
 
 function applyMapping(headers: string[], rawRows: string[][], mapping: ColumnMapping): ParsedRow[] {
-  const { dateIdx, descIdx, amountIdx, creditIdx, debitIdx } = mapping
-  return rawRows.map((parts, i) => {
+  const { dateIdx, descIdx, desc2Idx, amountIdx, creditIdx, debitIdx } = mapping
+  return rawRows.flatMap((parts, i) => {
     try {
       const rawDate = parts[dateIdx] ?? ''
+      // Skip balance/summary rows (NaN date or empty)
+      if (!rawDate || rawDate.toLowerCase() === 'nan') return []
       const date = normalizeDate(rawDate)
       if (!date) {
-        return { date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: `Data inválida: "${rawDate || '(vazio)'}"` }
+        return [{ date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: `Data inválida: "${rawDate || '(vazio)'}"` }]
       }
-      const description = (parts[descIdx] ?? '').trim() || `Transação ${i + 1}`
+      // Combine primary + secondary description (e.g. BTG: "Pix recebido" + "João Silva")
+      const primary = desc2Idx >= 0 ? (parts[desc2Idx] ?? '').trim() : ''
+      const secondary = descIdx >= 0 ? (parts[descIdx] ?? '').trim() : ''
+      const description = [primary, secondary].filter(Boolean).join(' — ') || `Transação ${i + 1}`
       let amount = 0
       if (amountIdx >= 0) {
         amount = parseAmount(parts[amountIdx] ?? '0')
@@ -148,9 +169,9 @@ function applyMapping(headers: string[], rawRows: string[][], mapping: ColumnMap
         const debit = parseAmount(parts[debitIdx] ?? '0')
         amount = credit > 0 ? credit : -Math.abs(debit)
       }
-      return { date, description, amount, type: amount >= 0 ? 'income' as const : 'expense' as const, raw: parts.join(' ') }
+      return [{ date, description, amount, type: amount >= 0 ? 'income' as const : 'expense' as const, raw: parts.join(' ') }]
     } catch {
-      return { date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: 'Linha inválida' }
+      return [{ date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: 'Linha inválida' }]
     }
   })
 }
@@ -190,7 +211,7 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
   const [rows, setRows] = useState<ParsedRow[]>([])
   const [rawHeaders, setRawHeaders] = useState<string[]>([])
   const [rawRows, setRawRows] = useState<string[][]>([])
-  const [colMap, setColMap] = useState<ColumnMapping>({ dateIdx: -1, descIdx: -1, amountIdx: -1, creditIdx: -1, debitIdx: -1 })
+  const [colMap, setColMap] = useState<ColumnMapping>({ dateIdx: -1, descIdx: -1, desc2Idx: -1, amountIdx: -1, creditIdx: -1, debitIdx: -1 })
   const [selectedAccount, setSelectedAccount] = useState(accounts[0]?.id ?? '')
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
@@ -235,10 +256,10 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         const all = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: '' })
         if (all.length < 2) { setParseError('Planilha vazia ou sem dados.'); setStep('idle'); return }
 
-        // Scan first 10 rows to find the actual header row (banks export metadata rows before headers)
+        // Scan first 15 rows to find the actual header row (BTG has headers at row 10)
         let headerRowIdx = 0
         let detected = detectColumns([])
-        for (let i = 0; i < Math.min(all.length - 1, 10); i++) {
+        for (let i = 0; i < Math.min(all.length - 1, 15); i++) {
           const candidate = (all[i] as unknown[]).map(h => String(h ?? ''))
           console.log(`[XLSX] Row ${i} candidata a cabeçalho:`, candidate)
           const candidateMapping = detectColumns(candidate)
