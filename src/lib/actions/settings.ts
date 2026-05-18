@@ -27,3 +27,18 @@ export async function updatePassword(data: { new_password: string }) {
   if (error) return { error: error.message }
   return { error: null }
 }
+
+export async function updatePreferences(data: { currency: string }) {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado' }
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({ currency: data.currency })
+    .eq('id', user.id)
+
+  if (error) return { error: error.message }
+  revalidatePath('/settings/preferences')
+  return { error: null }
+}
