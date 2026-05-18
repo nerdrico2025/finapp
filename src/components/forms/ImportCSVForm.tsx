@@ -1,13 +1,13 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
-  Upload, X, CheckCircle, AlertCircle, Loader2, AlertTriangle,
-  FileSpreadsheet, FileText, File,
+  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File,
 } from 'lucide-react'
 import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
-import { formatCurrency, formatDate } from '@/lib/utils/format'
+import { ensureDefaultCategoriesForImport } from '@/lib/actions/categories'
+import { formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category } from '@/types'
 
@@ -16,10 +16,21 @@ import type { Account, Category } from '@/types'
 interface ColumnMapping {
   dateIdx: number
   descIdx: number
-  desc2Idx: number  // secondary description column (e.g. BTG "Transação")
+  desc2Idx: number
   amountIdx: number
   creditIdx: number
   debitIdx: number
+}
+
+interface EditableRow {
+  date: string
+  description: string
+  amount: number        // signed: negative = expense, positive = income
+  type: 'income' | 'expense'
+  categoryId: string | null
+  checked: boolean
+  error?: string
+  raw: string
 }
 
 interface ImportResult {
@@ -39,18 +50,55 @@ interface ImportCSVFormProps {
   onCancel: () => void
 }
 
+// ─── Category suggestion ──────────────────────────────────────────────────────
+
+const CATEGORY_KEYWORDS: [RegExp, string][] = [
+  [/supermercado|mercado|mercearia|hortifruti|padaria|açougue|bom.?de.?preço|atacadão|carrefour|extra|pão.?de.?açúcar/i, 'Alimentação'],
+  [/restaurante|lanchonete|burger|pizza|fast.?food|ifood|rappi|bar\b|café\b|churrasco/i, 'Alimentação'],
+  [/farmácia|farmacia|drogaria|hospital|clínica|clinica|médico|medico|laborat|plano.*saúde|unimed|hapvida/i, 'Saúde'],
+  [/posto|combustível|combustivel|gasolina|etanol|uber\b|99.?pop|táxi|taxi|metrô|metro|ônibus|onibus|estacionamento|pedágio/i, 'Transporte'],
+  [/netflix|spotify|amazon|disney|hbo|youtube.*premium|apple.*tv|deezer|globoplay|telecine|crunchyroll|prime.?video/i, 'Assinaturas'],
+  [/aluguel|condomínio|condominio|iptu|energia.*elétrica|água.*esgoto|gás encanado|luz\b|celesc|sabesp|comgas/i, 'Moradia'],
+  [/pix.?enviado|transf.*enviada|ted|doc\b|pagamento.*pix/i, 'Transferência'],
+  [/pix.?recebido|transf.*recebida|salário|salario|renda|rendimento/i, 'Receitas'],
+]
+
+function suggestCategoryId(description: string, categories: Category[]): string | null {
+  if (!description) return null
+  for (const [regex, name] of CATEGORY_KEYWORDS) {
+    if (regex.test(description)) {
+      const match = categories.find(c => c.name.toLowerCase().includes(name.toLowerCase()))
+      if (match) return match.id
+    }
+  }
+  return null
+}
+
+// ─── Parsed → Editable conversion ────────────────────────────────────────────
+
+function parsedToEditable(parsed: ParsedRow[], categories: Category[]): EditableRow[] {
+  return parsed.map(r => ({
+    date: r.date,
+    description: r.description,
+    amount: r.amount,
+    type: r.type as 'income' | 'expense',
+    categoryId: r.error ? null : suggestCategoryId(r.description, categories),
+    checked: !r.error,
+    error: r.error,
+    raw: r.raw ?? '',
+  }))
+}
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 function parseAmount(raw: string): number {
   const s = (raw ?? '').trim()
   if (!s) return 0
-  // BR format: 1.234,56 → 1234.56
   if (s.includes(',')) return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
   return parseFloat(s.replace(/,/g, '')) || 0
 }
 
 function normalizeDate(raw: string): string {
-  // Strip time portion from datetime strings like "04/04/2026 18:24" or "2026-04-04T18:24:00"
   const s = (raw ?? '').trim().split(/[\sT]/)[0]
   if (!s || s.toLowerCase() === 'nan') return ''
   if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
@@ -86,7 +134,6 @@ function detectColumns(headers: string[]): ColumnMapping {
     (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao') && !c.includes('vencimento'))
   )
 
-  // Primary description: name/establishment/memo
   const descIdx = h.findIndex(c =>
     c.includes('descri') || c.includes('histor') || c.includes('memo') ||
     c.includes('lancamento') || c.includes('lançamento') || c.includes('estabele') ||
@@ -94,7 +141,6 @@ function detectColumns(headers: string[]): ColumnMapping {
     c === 'nome' || c === 'favorecido' || c === 'pagador'
   )
 
-  // Secondary description: transaction type (BTG "Transação", "Categoria")
   const desc2Idx = h.findIndex((c, i) =>
     i !== descIdx && (c === 'transação' || c === 'transacao' || c.includes('transaç') || c === 'categoria' || c === 'tipo')
   )
@@ -151,13 +197,11 @@ function applyMapping(headers: string[], rawRows: string[][], mapping: ColumnMap
   return rawRows.flatMap((parts, i) => {
     try {
       const rawDate = parts[dateIdx] ?? ''
-      // Skip balance/summary rows (NaN date or empty)
       if (!rawDate || rawDate.toLowerCase() === 'nan') return []
       const date = normalizeDate(rawDate)
       if (!date) {
         return [{ date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: `Data inválida: "${rawDate || '(vazio)'}"` }]
       }
-      // Combine primary + secondary description (e.g. BTG: "Pix recebido" + "João Silva")
       const primary = desc2Idx >= 0 ? (parts[desc2Idx] ?? '').trim() : ''
       const secondary = descIdx >= 0 ? (parts[descIdx] ?? '').trim() : ''
       const description = [primary, secondary].filter(Boolean).join(' — ') || `Transação ${i + 1}`
@@ -203,19 +247,39 @@ function parseOFX(content: string): ParsedRow[] {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormProps) {
+export function ImportCSVForm({ accounts, categories: initialCategories, onSuccess, onCancel }: ImportCSVFormProps) {
   const [step, setStep] = useState<Step>('idle')
   const [format, setFormat] = useState<FileFormat | null>(null)
   const [fileName, setFileName] = useState('')
   const [parseError, setParseError] = useState<string | null>(null)
-  const [rows, setRows] = useState<ParsedRow[]>([])
+  const [editableRows, setEditableRows] = useState<EditableRow[]>([])
   const [rawHeaders, setRawHeaders] = useState<string[]>([])
   const [rawRows, setRawRows] = useState<string[][]>([])
   const [colMap, setColMap] = useState<ColumnMapping>({ dateIdx: -1, descIdx: -1, desc2Idx: -1, amountIdx: -1, creditIdx: -1, debitIdx: -1 })
   const [selectedAccount, setSelectedAccount] = useState(accounts[0]?.id ?? '')
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
+  const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // Ensure user has categories; create defaults if empty
+  useEffect(() => {
+    if (initialCategories.length === 0) {
+      ensureDefaultCategoriesForImport().then(cats => {
+        if (cats.length > 0) setAllCategories(cats)
+      })
+    }
+  }, [initialCategories.length])
+
+  function updateRow(idx: number, patch: Partial<EditableRow>) {
+    setEditableRows(rows => rows.map((r, i) => i === idx ? { ...r, ...patch } : r))
+  }
+
+  function toggleAll() {
+    const validRows = editableRows.filter(r => !r.error)
+    const allChecked = validRows.every(r => r.checked)
+    setEditableRows(rows => rows.map(r => r.error ? r : { ...r, checked: !allChecked }))
+  }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
@@ -230,7 +294,7 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
     setFileName(file.name)
     setFormat(fmt)
     setParseError(null)
-    setRows([])
+    setEditableRows([])
     setResult(null)
     setStep('parsing')
 
@@ -241,11 +305,12 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         if (!headers.length) { setParseError('Arquivo CSV vazio ou inválido.'); setStep('idle'); return }
         console.log('[CSV] Headers detectados:', headers)
         const detected = detectColumns(headers)
-        // Normalize each row to same length as headers
         const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
         setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
-        if (isMappingValid(detected)) { setRows(applyMapping(headers, normalizedRaw, detected)); setStep('preview') }
-        else { setStep('mapping') }
+        if (isMappingValid(detected)) {
+          setEditableRows(parsedToEditable(applyMapping(headers, normalizedRaw, detected), allCategories))
+          setStep('preview')
+        } else { setStep('mapping') }
       }
 
       else if (fmt === 'xlsx') {
@@ -272,38 +337,39 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         }
 
         const headers = (all[headerRowIdx] as unknown[]).map(h => String(h ?? ''))
-        // Normalize each row to same length as headers to avoid undefined access
         const raw = (all.slice(headerRowIdx + 1) as unknown[][]).map(r =>
           headers.map((_, i) => String(r[i] ?? ''))
         )
         console.log(`[XLSX] Total linhas de dados: ${raw.length} | Colunas: ${headers.join(', ')}`)
 
-        if (!isMappingValid(detected)) {
-          console.log('[XLSX] Mapeamento automático falhou, abrindo mapeamento manual. Headers:', headers)
-        }
-
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
-        if (isMappingValid(detected)) { setRows(applyMapping(headers, raw, detected)); setStep('preview') }
-        else { setStep('mapping') }
+        if (isMappingValid(detected)) {
+          setEditableRows(parsedToEditable(applyMapping(headers, raw, detected), allCategories))
+          setStep('preview')
+        } else {
+          console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
+          setStep('mapping')
+        }
       }
 
       else if (fmt === 'ofx') {
         const text = await file.text()
         const parsed = parseOFX(text)
         if (!parsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-        setRows(parsed); setStep('preview')
+        setEditableRows(parsedToEditable(parsed, allCategories))
+        setStep('preview')
       }
 
       else if (fmt === 'pdf') {
         const fd = new FormData()
         fd.append('file', file)
         const parsed = await parsePDFAction(fd)
-
         if (!parsed.length || (parsed.length === 1 && parsed[0].error)) {
           setParseError(parsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
           setStep('idle'); return
         }
-        setRows(parsed); setStep('preview')
+        setEditableRows(parsedToEditable(parsed, allCategories))
+        setStep('preview')
       }
     } catch (err) {
       setParseError(`Erro ao processar o arquivo: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
@@ -312,16 +378,23 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
   }
 
   function applyManualMapping() {
-    setRows(applyMapping(rawHeaders, rawRows, colMap))
+    const parsed = applyMapping(rawHeaders, rawRows, colMap)
+    setEditableRows(parsedToEditable(parsed, allCategories))
     setStep('preview')
   }
 
   async function handleImport() {
     if (!selectedAccount) return
     setImporting(true)
-    const valid: CSVRow[] = rows
-      .filter(r => !r.error && r.date)
-      .map(r => ({ date: r.date, description: r.description, amount: r.amount, account_id: selectedAccount }))
+    const valid: CSVRow[] = editableRows
+      .filter(r => r.checked && !r.error && r.date)
+      .map(r => ({
+        date: r.date,
+        description: r.description,
+        amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
+        account_id: selectedAccount,
+        category_id: r.categoryId ?? null,
+      }))
     const res = await importTransactions(valid)
     setResult(res)
     setImporting(false)
@@ -331,12 +404,13 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
 
   function reset() {
     setStep('idle'); setFormat(null); setFileName(''); setParseError(null)
-    setRows([]); setRawHeaders([]); setRawRows([]); setResult(null)
+    setEditableRows([]); setRawHeaders([]); setRawRows([]); setResult(null)
     if (fileRef.current) fileRef.current.value = ''
   }
 
-  const validRows = rows.filter(r => !r.error)
-  const invalidRows = rows.filter(r => r.error)
+  const checkedRows = editableRows.filter(r => r.checked && !r.error && r.date)
+  const errorRows = editableRows.filter(r => r.error)
+  const validCount = editableRows.filter(r => !r.error).length
 
   // ── Result ──────────────────────────────────────────────────────────────────
   if (step === 'done' && result) {
@@ -374,7 +448,7 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
   // ── Normal flow ─────────────────────────────────────────────────────────────
   return (
     <div className="space-y-5">
-      {/* Account selector — always visible */}
+      {/* Account selector */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1.5">Importar para a conta</label>
         <select
@@ -409,7 +483,7 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
                 <p className="text-sm font-medium text-emerald-700 truncate">{fileName}</p>
                 <p className="text-xs text-gray-400 mt-0.5">
                   {format?.toUpperCase()}
-                  {step === 'preview' && ` · ${validRows.length} válidas${invalidRows.length > 0 ? `, ${invalidRows.length} com erro` : ''}`}
+                  {step === 'preview' && ` · ${checkedRows.length} selecionadas${errorRows.length > 0 ? `, ${errorRows.length} com erro` : ''}`}
                   {step === 'mapping' && ' · mapeamento necessário'}
                 </p>
               </div>
@@ -445,7 +519,6 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
             </p>
           </div>
 
-          {/* Raw data preview */}
           <div className="border border-gray-100 rounded-xl overflow-auto max-h-32">
             <table className="text-xs min-w-full">
               <thead className="bg-gray-50">
@@ -517,52 +590,142 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         </div>
       )}
 
-      {/* Preview table */}
-      {step === 'preview' && rows.length > 0 && (
+      {/* Preview table with inline editing */}
+      {step === 'preview' && editableRows.length > 0 && (
         <div>
-          <p className="text-sm font-medium text-gray-700 mb-2">
-            Pré-visualização
-            <span className="text-gray-400 font-normal ml-1">
-              ({validRows.length} válidas{invalidRows.length > 0 ? `, ${invalidRows.length} com erro` : ''})
-            </span>
-          </p>
-          <div className="border border-gray-100 rounded-xl overflow-hidden max-h-56 overflow-y-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-gray-50 sticky top-0">
-                <tr>
-                  <th className="text-left px-3 py-2 text-gray-500 font-medium">Data</th>
-                  <th className="text-left px-3 py-2 text-gray-500 font-medium">Descrição</th>
-                  <th className="text-right px-3 py-2 text-gray-500 font-medium">Valor</th>
-                  <th className="px-2 py-2" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {rows.slice(0, 50).map((row, i) => (
-                  <tr key={i} className={row.error ? 'bg-red-50' : ''}>
-                    <td className="px-3 py-2 text-gray-600 whitespace-nowrap">
-                      {row.date ? formatDate(row.date) : '—'}
-                    </td>
-                    <td className="px-3 py-2 text-gray-800 max-w-[180px] truncate" title={row.error}>
-                      {row.description}
-                    </td>
-                    <td className={cn('px-3 py-2 text-right font-medium whitespace-nowrap', row.amount >= 0 ? 'text-emerald-600' : 'text-red-600')}>
-                      {row.error ? '—' : formatCurrency(Math.abs(row.amount))}
-                    </td>
-                    <td className="px-2 py-2 text-center">
-                      {row.error
-                        ? <span title={row.error}><AlertCircle className="w-3.5 h-3.5 text-red-400" /></span>
-                        : <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
-                      }
-                    </td>
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium text-gray-700">
+              Pré-visualização
+              <span className="text-gray-400 font-normal ml-1">
+                ({checkedRows.length} de {validCount} selecionadas{errorRows.length > 0 ? `, ${errorRows.length} com erro` : ''})
+              </span>
+            </p>
+            <button
+              onClick={toggleAll}
+              className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+            >
+              {checkedRows.length === validCount ? 'Desmarcar todas' : 'Selecionar todas'}
+            </button>
+          </div>
+
+          <div className="border border-gray-100 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto max-h-80 overflow-y-auto">
+              <table className="w-full text-xs min-w-[580px]">
+                <thead className="bg-gray-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-2 py-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={checkedRows.length === validCount && validCount > 0}
+                        onChange={toggleAll}
+                        className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                    </th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Data</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Descrição</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Categoria</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Tipo</th>
+                    <th className="text-right px-2 py-2 text-gray-500 font-medium whitespace-nowrap">Valor (R$)</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-            {rows.length > 50 && (
-              <p className="text-xs text-gray-400 text-center py-2 border-t border-gray-50">
-                +{rows.length - 50} linhas não exibidas
-              </p>
-            )}
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {editableRows.map((row, i) => (
+                    <tr
+                      key={i}
+                      className={cn(
+                        'transition-opacity',
+                        row.error ? 'bg-red-50' : !row.checked ? 'opacity-40 bg-gray-50' : 'hover:bg-gray-50/50',
+                      )}
+                    >
+                      {/* Checkbox */}
+                      <td className="px-2 py-1.5 text-center">
+                        <input
+                          type="checkbox"
+                          checked={row.checked}
+                          onChange={e => updateRow(i, { checked: e.target.checked })}
+                          disabled={!!row.error}
+                          className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+                        />
+                      </td>
+
+                      {/* Date */}
+                      <td className="px-2 py-1.5 text-gray-500 whitespace-nowrap">
+                        {row.date ? formatDate(row.date) : <span className="text-red-400" title={row.error}>!</span>}
+                      </td>
+
+                      {/* Description */}
+                      <td className="px-2 py-1.5">
+                        {row.error ? (
+                          <span className="text-red-500 italic text-xs" title={row.error}>{row.error}</span>
+                        ) : (
+                          <input
+                            value={row.description}
+                            onChange={e => updateRow(i, { description: e.target.value })}
+                            className="w-full min-w-[130px] bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors"
+                          />
+                        )}
+                      </td>
+
+                      {/* Category */}
+                      <td className="px-2 py-1.5">
+                        <select
+                          value={row.categoryId ?? ''}
+                          onChange={e => updateRow(i, { categoryId: e.target.value || null })}
+                          disabled={!!row.error}
+                          className="w-full min-w-[110px] bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
+                        >
+                          <option value="">— categoria —</option>
+                          {allCategories.map(c => (
+                            <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
+                          ))}
+                        </select>
+                      </td>
+
+                      {/* Type toggle */}
+                      <td className="px-2 py-1.5">
+                        <button
+                          onClick={() => updateRow(i, {
+                            type: row.type === 'income' ? 'expense' : 'income',
+                            amount: -row.amount,
+                          })}
+                          disabled={!!row.error}
+                          className={cn(
+                            'px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap transition-colors',
+                            row.type === 'income'
+                              ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
+                              : 'bg-red-100 text-red-700 hover:bg-red-200',
+                          )}
+                        >
+                          {row.type === 'income' ? 'Receita' : 'Despesa'}
+                        </button>
+                      </td>
+
+                      {/* Amount */}
+                      <td className="px-2 py-1.5 text-right">
+                        {row.error ? (
+                          <span className="text-red-400">—</span>
+                        ) : (
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={Math.abs(row.amount).toFixed(2)}
+                            onChange={e => {
+                              const abs = parseFloat(e.target.value) || 0
+                              updateRow(i, { amount: row.type === 'expense' ? -abs : abs })
+                            }}
+                            className={cn(
+                              'w-[80px] bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-right font-medium py-0.5 transition-colors',
+                              row.type === 'income' ? 'text-emerald-700' : 'text-red-700',
+                            )}
+                          />
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -575,12 +738,12 @@ export function ImportCSVForm({ accounts, onSuccess, onCancel }: ImportCSVFormPr
         {step === 'preview' && (
           <button
             onClick={handleImport}
-            disabled={validRows.length === 0 || !selectedAccount || importing}
+            disabled={checkedRows.length === 0 || !selectedAccount || importing}
             className="flex-1 flex justify-center items-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white text-sm font-medium rounded-lg transition-colors"
           >
             {importing
               ? <><Loader2 className="w-4 h-4 animate-spin" /> Importando…</>
-              : `Importar ${validRows.length} transações`
+              : `Importar ${checkedRows.length} transações`
             }
           </button>
         )}
