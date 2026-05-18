@@ -192,11 +192,11 @@ export interface Database {
           category_id: string | null
           type: 'income' | 'expense' | 'transfer'
           amount: number
-          description: string | null
+          name: string
           frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
           start_date: string
           end_date: string | null
-          next_due_date: string
+          next_date: string
           last_generated_date: string | null
           is_active: boolean
           auto_create: boolean
@@ -210,11 +210,11 @@ export interface Database {
           category_id?: string | null
           type: 'income' | 'expense' | 'transfer'
           amount: number
-          description?: string | null
+          name: string
           frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
           start_date: string
           end_date?: string | null
-          next_due_date: string
+          next_date: string
           last_generated_date?: string | null
           is_active?: boolean
           auto_create?: boolean
@@ -226,11 +226,11 @@ export interface Database {
           category_id?: string | null
           type?: 'income' | 'expense' | 'transfer'
           amount?: number
-          description?: string | null
+          name?: string
           frequency?: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
           start_date?: string
           end_date?: string | null
-          next_due_date?: string
+          next_date?: string
           last_generated_date?: string | null
           is_active?: boolean
           auto_create?: boolean

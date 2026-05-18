@@ -158,7 +158,7 @@ export function RecurringClient({ rules, accounts, categories }: Props) {
           <div className="space-y-4">
             <p className="text-sm text-gray-600">
               Excluir a regra{' '}
-              <span className="font-semibold text-gray-900">{modal.rule.description}</span>?
+              <span className="font-semibold text-gray-900">{modal.rule.name}</span>?
               As transações já geradas não serão afetadas.
             </p>
             {deleteError && (
@@ -286,8 +286,8 @@ function RuleItem({
   onToggle: () => void
 }) {
   const today = new Date().toISOString().split('T')[0]
-  const isOverdue = rule.is_active && rule.next_due_date < today
-  const isDueToday = rule.is_active && rule.next_due_date === today
+  const isOverdue = rule.is_active && rule.next_date < today
+  const isDueToday = rule.is_active && rule.next_date === today
 
   return (
     <li className={cn(
@@ -309,7 +309,7 @@ function RuleItem({
       {/* Info */}
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
-          <p className="text-sm font-medium text-gray-900 truncate">{rule.description}</p>
+          <p className="text-sm font-medium text-gray-900 truncate">{rule.name}</p>
           {(isOverdue || isDueToday) && rule.is_active && (
             <span className={cn(
               'text-xs px-1.5 py-0.5 rounded-full font-medium shrink-0',
@@ -324,7 +324,7 @@ function RuleItem({
           <span>·</span>
           <span className="flex items-center gap-1">
             <CalendarClock className="w-3 h-3" />
-            {formatDate(rule.next_due_date)}
+            {formatDate(rule.next_date)}
           </span>
           {rule.account && <><span>·</span><span>{rule.account.name}</span></>}
         </div>

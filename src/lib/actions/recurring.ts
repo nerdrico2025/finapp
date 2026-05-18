@@ -13,11 +13,11 @@ export type RuleWithRelations = {
   category_id: string | null
   type: TransactionType
   amount: number
-  description: string | null
+  name: string
   frequency: RecurrenceFrequency
   start_date: string
   end_date: string | null
-  next_due_date: string
+  next_date: string
   last_generated_date: string | null
   is_active: boolean
   auto_create: boolean
@@ -28,7 +28,7 @@ export type RuleWithRelations = {
 }
 
 export interface RecurringFormData {
-  description: string
+  name: string
   type: TransactionType
   amount: number
   account_id: string
@@ -94,11 +94,11 @@ export async function createRecurringRule(formData: RecurringFormData) {
     category_id: formData.category_id ?? null,
     type: formData.type,
     amount: formData.amount,
-    description: formData.description,
+    name: formData.name,
     frequency: formData.frequency,
     start_date: formData.start_date,
     end_date: formData.end_date ?? null,
-    next_due_date: formData.start_date,
+    next_date: formData.start_date,
     is_active: true,
     auto_create: formData.auto_create ?? true,
   })
@@ -118,7 +118,7 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
   const { error } = await supabase
     .from('recurring_rules')
     .update({
-      ...(formData.description !== undefined && { description: formData.description }),
+      ...(formData.name        !== undefined && { name: formData.name }),
       ...(formData.type        !== undefined && { type: formData.type }),
       ...(formData.amount      !== undefined && { amount: formData.amount }),
       ...(formData.account_id  !== undefined && { account_id: formData.account_id }),
@@ -195,7 +195,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
     .select('*')
     .eq('user_id', user.id)
     .eq('is_active', true)
-    .lte('next_due_date', today)
+    .lte('next_date', today)
 
   if (!rules || rules.length === 0) return { generated: 0 }
 
@@ -203,9 +203,9 @@ export async function processRecurring(): Promise<{ generated: number }> {
 
   for (const rule of rules) {
     // Skip if past end_date
-    if (rule.end_date && rule.next_due_date > rule.end_date) continue
+    if (rule.end_date && rule.next_date > rule.end_date) continue
 
-    let nextDate = rule.next_due_date
+    let nextDate = rule.next_date
     let iterations = 0
     const MAX_ITERATIONS = 24
 
@@ -228,7 +228,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
             category_id: rule.category_id,
             type: rule.type,
             amount: rule.amount,
-            description: rule.description,
+            description: rule.name,
             date: nextDate,
             status: 'completed' as const,
             recurring_rule_id: rule.id,
@@ -251,7 +251,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
     await supabase
       .from('recurring_rules')
       .update({
-        next_due_date: nextDate,
+        next_date: nextDate,
         last_generated_date: today,
       })
       .eq('id', rule.id)

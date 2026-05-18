@@ -19,7 +19,7 @@ export const FREQUENCY_LABELS: Record<string, string> = {
 }
 
 const recurringSchema = z.object({
-  description: z.string().min(1, 'Informe o nome'),
+  name: z.string().min(1, 'Informe o nome'),
   type: z.enum(['income', 'expense']),
   amount: z.string().min(1, 'Informe o valor'),
   account_id: z.string().min(1, 'Selecione uma conta'),
@@ -69,7 +69,7 @@ export function RecurringForm({
   } = useForm<RecurringFormRaw>({
     resolver: zodResolver(recurringSchema),
     defaultValues: {
-      description: defaultValues?.description ?? '',
+      name: defaultValues?.name ?? '',
       type: (defaultValues?.type as 'income' | 'expense') ?? 'expense',
       amount: defaultValues?.amount ? String(defaultValues.amount) : '',
       account_id: defaultValues?.account_id ?? accounts[0]?.id ?? '',
@@ -88,6 +88,7 @@ export function RecurringForm({
     setServerError(null)
     const result = await onSubmit({
       ...raw,
+      name: raw.name,
       amount: parseFloat(raw.amount) || 0,
       category_id: raw.category_id || null,
       end_date: raw.end_date || null,
@@ -127,17 +128,17 @@ export function RecurringForm({
         </div>
       </div>
 
-      {/* Description */}
+      {/* Name */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1.5">Nome</label>
         <input
           type="text"
           placeholder="Ex: Aluguel, Salário mensal..."
-          {...register('description')}
+          {...register('name')}
           className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
         />
-        {errors.description && (
-          <p className="mt-1 text-xs text-red-600">{errors.description.message}</p>
+        {errors.name && (
+          <p className="mt-1 text-xs text-red-600">{errors.name.message}</p>
         )}
       </div>
 
