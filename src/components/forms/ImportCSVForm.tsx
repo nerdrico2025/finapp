@@ -6,8 +6,8 @@ import {
 } from 'lucide-react'
 import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
-import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
-import { formatDate } from '@/lib/utils/format'
+import { ensureDefaultCategoriesForImport, createCategory, getCategories } from '@/lib/actions/categories'
+import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category } from '@/types'
 
@@ -253,6 +253,47 @@ function parseOFX(content: string): ParsedRow[] {
   return rows
 }
 
+// ─── AmountCell ──────────────────────────────────────────────────────────────
+
+function AmountCell({ amount, type, onChange }: {
+  amount: number
+  type: 'income' | 'expense'
+  onChange: (signed: number) => void
+}) {
+  const [editing, setEditing] = useState(false)
+  const abs = Math.abs(amount)
+  const colorClass = type === 'income' ? 'text-emerald-700' : 'text-red-700'
+
+  if (editing) {
+    return (
+      <input
+        type="number"
+        autoFocus
+        step="0.01"
+        min="0"
+        defaultValue={abs.toFixed(2)}
+        onBlur={e => {
+          const v = parseFloat(e.target.value) || 0
+          onChange(type === 'expense' ? -v : v)
+          setEditing(false)
+        }}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') e.currentTarget.blur() }}
+        className={cn('w-full bg-transparent border-b border-emerald-400 focus:outline-none text-right font-medium py-0.5', colorClass)}
+      />
+    )
+  }
+
+  return (
+    <button
+      onClick={() => setEditing(true)}
+      title="Clique para editar"
+      className={cn('w-full text-right font-medium py-0.5 hover:underline decoration-dotted', colorClass)}
+    >
+      {formatCurrency(abs)}
+    </button>
+  )
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function ImportCSVForm({ accounts, categories: initialCategories, onSuccess, onCancel }: ImportCSVFormProps) {
@@ -414,18 +455,24 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   async function saveNewCategory() {
     if (!newCat || !newCat.name.trim()) return
+    // Capture values before any state mutation to avoid stale closure issues
+    const rowIdx = newCat.rowIdx
+    const name = newCat.name.trim()
+    const color = newCat.color
     setNewCat(c => c ? { ...c, saving: true } : c)
-    const result = await createCategory({ name: newCat.name.trim(), type: 'expense', icon: '📦', color: newCat.color })
-    if (result.error || !('error' in result)) {
+    const result = await createCategory({ name, type: 'expense', icon: '📦', color })
+    if (result.error) {
       setNewCat(c => c ? { ...c, saving: false } : c)
       return
     }
-    // Refresh categories list
-    const updated = await ensureDefaultCategoriesForImport()
-    setAllCategories(updated)
-    catsRef.current = updated
-    const created = updated.find(c => c.name === newCat.name.trim())
-    if (created) updateRow(newCat.rowIdx, { categoryId: created.id })
+    // Use getCategories for a guaranteed fresh list (bypasses ensureDefault's early-return)
+    const { data: fresh } = await getCategories()
+    if (fresh && fresh.length > 0) {
+      setAllCategories(fresh as Category[])
+      catsRef.current = fresh as Category[]
+      const created = fresh.find(c => c.name === name)
+      if (created) updateRow(rowIdx, { categoryId: created.id })
+    }
     setNewCat(null)
   }
 
@@ -757,23 +804,14 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                       </td>
 
                       {/* Amount */}
-                      <td className="px-2 py-1.5 text-right">
+                      <td className="px-2 py-1.5">
                         {row.error ? (
-                          <span className="text-red-400">—</span>
+                          <span className="block text-right text-red-400">—</span>
                         ) : (
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={Math.abs(row.amount).toFixed(2)}
-                            onChange={e => {
-                              const abs = parseFloat(e.target.value) || 0
-                              updateRow(i, { amount: row.type === 'expense' ? -abs : abs })
-                            }}
-                            className={cn(
-                              'w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-right font-medium py-0.5 transition-colors',
-                              row.type === 'income' ? 'text-emerald-700' : 'text-red-700',
-                            )}
+                          <AmountCell
+                            amount={row.amount}
+                            type={row.type}
+                            onChange={v => updateRow(i, { amount: v })}
                           />
                         )}
                       </td>
