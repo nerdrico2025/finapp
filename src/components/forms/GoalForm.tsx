@@ -1,11 +1,12 @@
 'use client'
 
 import { useState } from 'react'
-import { useForm } from 'react-hook-form'
+import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import type { GoalFormData } from '@/lib/actions/goals'
 
 const ICON_SUGGESTIONS = ['🏠', '🚗', '✈️', '🎓', '💎', '📱', '🏖️', '💪', '👶', '💻', '🌍', '🐶']
@@ -38,6 +39,7 @@ export function GoalForm({ defaultValues, onSubmit, onCancel, submitLabel = 'Sal
     handleSubmit,
     watch,
     setValue,
+    control,
     formState: { errors, isSubmitting },
   } = useForm<FormRaw>({
     resolver: zodResolver(schema),
@@ -155,17 +157,17 @@ export function GoalForm({ defaultValues, onSubmit, onCancel, submitLabel = 'Sal
         {/* Target amount */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Valor da meta</label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">R$</span>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              placeholder="0,00"
-              {...register('target_amount')}
-              className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-            />
-          </div>
+          <Controller
+            name="target_amount"
+            control={control}
+            render={({ field }) => (
+              <CurrencyInput
+                value={field.value}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+              />
+            )}
+          />
           {errors.target_amount && (
             <p className="mt-1 text-xs text-red-600">{errors.target_amount.message}</p>
           )}
@@ -176,17 +178,17 @@ export function GoalForm({ defaultValues, onSubmit, onCancel, submitLabel = 'Sal
           <label className="block text-sm font-medium text-gray-700 mb-1.5">
             Já guardei <span className="text-gray-400 font-normal">(opcional)</span>
           </label>
-          <div className="relative">
-            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-500">R$</span>
-            <input
-              type="number"
-              step="0.01"
-              min="0"
-              placeholder="0,00"
-              {...register('current_amount')}
-              className="w-full pl-9 pr-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-            />
-          </div>
+          <Controller
+            name="current_amount"
+            control={control}
+            render={({ field }) => (
+              <CurrencyInput
+                value={field.value}
+                onChange={field.onChange}
+                onBlur={field.onBlur}
+              />
+            )}
+          />
         </div>
       </div>
 
