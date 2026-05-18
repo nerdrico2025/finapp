@@ -2,11 +2,11 @@
 
 import { useState, useRef, useEffect } from 'react'
 import {
-  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File,
+  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus,
 } from 'lucide-react'
 import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
-import { ensureDefaultCategoriesForImport } from '@/lib/actions/categories'
+import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category } from '@/types'
@@ -53,40 +53,48 @@ interface ImportCSVFormProps {
 // ─── Category suggestion ──────────────────────────────────────────────────────
 
 const CATEGORY_KEYWORDS: [RegExp, string][] = [
-  [/supermercado|mercado|mercearia|hortifruti|padaria|açougue|bom.?de.?preço|atacadão|carrefour|extra|pão.?de.?açúcar/i, 'Alimentação'],
-  [/restaurante|lanchonete|burger|pizza|fast.?food|ifood|rappi|bar\b|café\b|churrasco/i, 'Alimentação'],
-  [/farmácia|farmacia|drogaria|hospital|clínica|clinica|médico|medico|laborat|plano.*saúde|unimed|hapvida/i, 'Saúde'],
-  [/posto|combustível|combustivel|gasolina|etanol|uber\b|99.?pop|táxi|taxi|metrô|metro|ônibus|onibus|estacionamento|pedágio/i, 'Transporte'],
-  [/netflix|spotify|amazon|disney|hbo|youtube.*premium|apple.*tv|deezer|globoplay|telecine|crunchyroll|prime.?video/i, 'Assinaturas'],
-  [/aluguel|condomínio|condominio|iptu|energia.*elétrica|água.*esgoto|gás encanado|luz\b|celesc|sabesp|comgas/i, 'Moradia'],
-  [/pix.?enviado|transf.*enviada|ted|doc\b|pagamento.*pix/i, 'Transferência'],
-  [/pix.?recebido|transf.*recebida|salário|salario|renda|rendimento/i, 'Receitas'],
+  [/supermercado|mercado|mercearia|hortifruti|padaria|açougue|atacadão|carrefour|extra|pão.?de.?açúcar|bom.?de.?preço/i, 'Alimentação'],
+  [/restaurante|lanchonete|burger|pizza|fast.?food|ifood|rappi|bar\b|café\b|churrasco|lanche/i, 'Alimentação'],
+  [/farmácia|farmacia|drogaria|hospital|clínica|clinica|médico|medico|laborat|plano.?de.?saúde|unimed|hapvida/i, 'Saúde'],
+  [/uber\b|99\b|táxi|taxi|metrô|metro|ônibus|onibus|estacionamento|pedágio|posto\b|combustível|combustivel|gasolina|etanol/i, 'Transporte'],
+  [/netflix|spotify|amazon|disney|hbo|apple\b|google\b|deezer|globoplay|telecine|crunchyroll|prime.?video|youtube.*premium/i, 'Assinaturas'],
+  [/aluguel|condomínio|condominio|iptu|luz\b|energia|água\b|gás\b|internet|telecom|vivo\b|claro\b|tim\b|oi\b/i, 'Moradia'],
+  [/salário|salario|pagamento|holerite/i, 'Salário'],
+  [/pix.?recebido|transf.*recebida|ted.?recebido|doc.?recebido/i, 'Transferência'],
+  [/pix.?enviado|transf.*enviada|transferência|ted\b|doc\b/i, 'Transferência'],
 ]
+
+const BALANCE_ROW_RE = /saldo.?diário|saldo.?do.?dia|saldo.?anterior/i
 
 function suggestCategoryId(description: string, categories: Category[]): string | null {
   if (!description) return null
   for (const [regex, name] of CATEGORY_KEYWORDS) {
     if (regex.test(description)) {
-      const match = categories.find(c => c.name.toLowerCase().includes(name.toLowerCase()))
+      const match = categories.find(c => c.name.toLowerCase() === name.toLowerCase())
+        ?? categories.find(c => c.name.toLowerCase().includes(name.toLowerCase()))
       if (match) return match.id
     }
   }
-  return null
+  // fallback: "Outros"
+  return categories.find(c => c.name.toLowerCase() === 'outros')?.id ?? null
 }
 
 // ─── Parsed → Editable conversion ────────────────────────────────────────────
 
 function parsedToEditable(parsed: ParsedRow[], categories: Category[]): EditableRow[] {
-  return parsed.map(r => ({
-    date: r.date,
-    description: r.description,
-    amount: r.amount,
-    type: r.type as 'income' | 'expense',
-    categoryId: r.error ? null : suggestCategoryId(r.description, categories),
-    checked: !r.error,
-    error: r.error,
-    raw: r.raw ?? '',
-  }))
+  return parsed.map(r => {
+    const isBalanceRow = BALANCE_ROW_RE.test(r.description ?? '')
+    return {
+      date: r.date,
+      description: r.description,
+      amount: r.amount,
+      type: r.type as 'income' | 'expense',
+      categoryId: r.error || isBalanceRow ? null : suggestCategoryId(r.description, categories),
+      checked: !r.error && !isBalanceRow,
+      error: r.error,
+      raw: r.raw ?? '',
+    }
+  })
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -260,16 +268,21 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [importing, setImporting] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
+  const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
+  // Ref so handleFile always reads the latest categories without stale closure
+  const catsRef = useRef<Category[]>(initialCategories)
+  useEffect(() => { catsRef.current = allCategories }, [allCategories])
 
-  // Ensure user has categories; create defaults if empty
+  // Ensure defaults on mount (async, non-blocking)
   useEffect(() => {
-    if (initialCategories.length === 0) {
-      ensureDefaultCategoriesForImport().then(cats => {
-        if (cats.length > 0) setAllCategories(cats)
-      })
-    }
-  }, [initialCategories.length])
+    ensureDefaultCategoriesForImport().then(cats => {
+      if (cats.length > 0) {
+        setAllCategories(cats)
+        catsRef.current = cats
+      }
+    })
+  }, [])
 
   function updateRow(idx: number, patch: Partial<EditableRow>) {
     setEditableRows(rows => rows.map((r, i) => i === idx ? { ...r, ...patch } : r))
@@ -299,6 +312,14 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setStep('parsing')
 
     try {
+      // Guarantee categories are loaded before suggesting (fixes race condition)
+      let cats = catsRef.current
+      if (cats.length === 0) {
+        cats = await ensureDefaultCategoriesForImport()
+        setAllCategories(cats)
+        catsRef.current = cats
+      }
+
       if (fmt === 'csv') {
         const text = await file.text()
         const { headers, rawRows: raw } = csvToRaw(text)
@@ -308,7 +329,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
         setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
         if (isMappingValid(detected)) {
-          setEditableRows(parsedToEditable(applyMapping(headers, normalizedRaw, detected), allCategories))
+          setEditableRows(parsedToEditable(applyMapping(headers, normalizedRaw, detected), cats))
           setStep('preview')
         } else { setStep('mapping') }
       }
@@ -344,7 +365,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
         if (isMappingValid(detected)) {
-          setEditableRows(parsedToEditable(applyMapping(headers, raw, detected), allCategories))
+          setEditableRows(parsedToEditable(applyMapping(headers, raw, detected), cats))
           setStep('preview')
         } else {
           console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
@@ -356,7 +377,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const text = await file.text()
         const parsed = parseOFX(text)
         if (!parsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-        setEditableRows(parsedToEditable(parsed, allCategories))
+        setEditableRows(parsedToEditable(parsed, cats))
         setStep('preview')
       }
 
@@ -368,7 +389,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setParseError(parsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
           setStep('idle'); return
         }
-        setEditableRows(parsedToEditable(parsed, allCategories))
+        setEditableRows(parsedToEditable(parsed, cats))
         setStep('preview')
       }
     } catch (err) {
@@ -379,8 +400,33 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   function applyManualMapping() {
     const parsed = applyMapping(rawHeaders, rawRows, colMap)
-    setEditableRows(parsedToEditable(parsed, allCategories))
+    setEditableRows(parsedToEditable(parsed, catsRef.current))
     setStep('preview')
+  }
+
+  function handleCategoryChange(rowIdx: number, value: string) {
+    if (value === '__new__') {
+      setNewCat({ rowIdx, name: '', color: '#6b7280', saving: false })
+    } else {
+      updateRow(rowIdx, { categoryId: value || null })
+    }
+  }
+
+  async function saveNewCategory() {
+    if (!newCat || !newCat.name.trim()) return
+    setNewCat(c => c ? { ...c, saving: true } : c)
+    const result = await createCategory({ name: newCat.name.trim(), type: 'expense', icon: '📦', color: newCat.color })
+    if (result.error || !('error' in result)) {
+      setNewCat(c => c ? { ...c, saving: false } : c)
+      return
+    }
+    // Refresh categories list
+    const updated = await ensureDefaultCategoriesForImport()
+    setAllCategories(updated)
+    catsRef.current = updated
+    const created = updated.find(c => c.name === newCat.name.trim())
+    if (created) updateRow(newCat.rowIdx, { categoryId: created.id })
+    setNewCat(null)
   }
 
   async function handleImport() {
@@ -679,7 +725,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                       <td className="px-2 py-1.5">
                         <select
                           value={row.categoryId ?? ''}
-                          onChange={e => updateRow(i, { categoryId: e.target.value || null })}
+                          onChange={e => handleCategoryChange(i, e.target.value)}
                           disabled={!!row.error}
                           className="w-full bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
                         >
@@ -687,6 +733,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           {allCategories.map(c => (
                             <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
                           ))}
+                          <option value="__new__">+ Nova categoria</option>
                         </select>
                       </td>
 
@@ -736,6 +783,47 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
               </table>
             </div>
           </div>
+
+          {/* Inline new category form */}
+          {newCat && (
+            <div className="mt-2 border border-emerald-200 bg-emerald-50 rounded-xl p-3 space-y-2">
+              <p className="text-xs font-medium text-emerald-800">Nova categoria</p>
+              <div className="flex gap-2 items-center">
+                <input
+                  autoFocus
+                  placeholder="Nome da categoria"
+                  value={newCat.name}
+                  onChange={e => setNewCat(c => c ? { ...c, name: e.target.value } : c)}
+                  onKeyDown={e => { if (e.key === 'Enter') saveNewCategory(); if (e.key === 'Escape') setNewCat(null) }}
+                  className="flex-1 px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                <div className="flex gap-1 shrink-0">
+                  {['#22c55e','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#6b7280','#9ca3af'].map(color => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => setNewCat(c => c ? { ...c, color } : c)}
+                      className={cn('w-5 h-5 rounded-full transition-transform', newCat.color === color ? 'ring-2 ring-offset-1 ring-gray-400 scale-110' : '')}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="flex gap-2 justify-end">
+                <button onClick={() => setNewCat(null)} className="px-3 py-1 text-xs text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg bg-white">
+                  Cancelar
+                </button>
+                <button
+                  onClick={saveNewCategory}
+                  disabled={!newCat.name.trim() || newCat.saving}
+                  className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 rounded-lg"
+                >
+                  {newCat.saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                  Salvar
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
