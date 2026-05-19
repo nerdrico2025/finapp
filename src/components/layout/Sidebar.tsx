@@ -11,6 +11,7 @@ import {
   PieChart,
   Target,
   Bell,
+  BarChart2,
   Settings,
   TrendingUp,
   Users,
@@ -27,6 +28,7 @@ const navItems = [
   { href: '/budgets',                label: 'Orçamentos',   icon: PieChart },
   { href: '/goals',                  label: 'Metas',        icon: Target },
   { href: '/alerts',                 label: 'Alertas',      icon: Bell },
+  { href: '/reports',                label: 'Relatórios',   icon: BarChart2 },
 ]
 
 interface SidebarProps {

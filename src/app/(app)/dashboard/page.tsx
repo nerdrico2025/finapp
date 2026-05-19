@@ -18,19 +18,28 @@ import {
 } from '@/lib/actions/dashboard'
 import { ExpensesByCategoryChart } from '@/components/charts/ExpensesByCategoryChart'
 import { MonthlyOverviewChart } from '@/components/charts/MonthlyOverviewChart'
-import { BudgetProgressBar } from '@/components/charts/BudgetProgressBar'
+import { MonthNavigator } from '@/components/ui/MonthNavigator'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 
-const MONTHS = [
-  'Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
-  'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro',
-]
-
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: { month?: string; year?: string }
+}) {
   const now = new Date()
-  const month = now.getMonth() + 1
-  const year = now.getFullYear()
+  const currentMonth = now.getMonth() + 1
+  const currentYear = now.getFullYear()
+
+  let month = searchParams.month ? parseInt(searchParams.month) : currentMonth
+  let year  = searchParams.year  ? parseInt(searchParams.year)  : currentYear
+
+  if (isNaN(month) || month < 1 || month > 12) month = currentMonth
+  if (isNaN(year)  || year < 2000)             year  = currentYear
+  if (year > currentYear || (year === currentYear && month > currentMonth)) {
+    month = currentMonth
+    year  = currentYear
+  }
 
   const [
     { generated },
@@ -47,7 +56,7 @@ export default async function DashboardPage() {
     getMonthlySummary(month, year),
     getExpensesByCategory(month, year),
     getMonthlyOverview(),
-    getTransactions({ pageSize: 5 }),
+    getTransactions({ pageSize: 5, month, year }),
     getUpcomingAlerts(7),
     getGoals(),
   ])
@@ -60,19 +69,19 @@ export default async function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* ── Header ───────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Dashboard</h1>
-          <p className="mt-0.5 text-sm text-gray-500">
-            {MONTHS[month - 1]} {year}
-          </p>
         </div>
-        {generated > 0 && (
-          <span className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <RefreshCw className="w-3.5 h-3.5" />
-            {generated} recorrência{generated > 1 ? 's' : ''} gerada{generated > 1 ? 's' : ''}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          <MonthNavigator month={month} year={year} basePath="/dashboard" />
+          {generated > 0 && (
+            <span className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              <RefreshCw className="w-3.5 h-3.5" />
+              {generated} recorrência{generated > 1 ? 's' : ''} gerada{generated > 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* ── Summary Cards ────────────────────────────────────────────────── */}
@@ -92,7 +101,6 @@ export default async function DashboardPage() {
           iconBg="bg-emerald-50"
           iconColor="text-emerald-600"
           valueColor="text-emerald-600"
-          sub={`+${formatCurrency(summary.income)}`}
         />
         <SummaryCard
           label="Despesas do mês"
@@ -152,7 +160,6 @@ export default async function DashboardPage() {
 
       {/* ── Charts ───────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Pie: expenses by category */}
         <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 p-5">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">
             Despesas por categoria
@@ -162,7 +169,6 @@ export default async function DashboardPage() {
           </div>
         </div>
 
-        {/* Bar: monthly overview */}
         <div className="lg:col-span-3 bg-white rounded-2xl border border-gray-100 p-5">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">
             Receitas vs Despesas — últimos 6 meses
@@ -195,7 +201,6 @@ export default async function DashboardPage() {
             <ul className="divide-y divide-gray-50">
               {recentTx.map((tx) => (
                 <li key={tx.id} className="flex items-center gap-3 px-5 py-3">
-                  {/* Category icon */}
                   <div
                     className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
                     style={{
@@ -211,7 +216,6 @@ export default async function DashboardPage() {
                     )}
                   </div>
 
-                  {/* Info */}
                   <div className="flex-1 min-w-0">
                     <p className="text-sm font-medium text-gray-900 truncate">
                       {tx.description ?? tx.category?.name ?? '—'}
@@ -222,7 +226,6 @@ export default async function DashboardPage() {
                     </p>
                   </div>
 
-                  {/* Amount */}
                   <p className={cn(
                     'text-sm font-semibold tabular-nums shrink-0',
                     tx.type === 'income' ? 'text-emerald-600' : 'text-red-600'
@@ -303,7 +306,7 @@ export default async function DashboardPage() {
 // ─── Summary Card ──────────────────────────────────────────────────────────────
 
 function SummaryCard({
-  label, value, icon, iconBg, iconColor, valueColor, sub,
+  label, value, icon, iconBg, iconColor, valueColor,
 }: {
   label: string
   value: string
@@ -311,7 +314,6 @@ function SummaryCard({
   iconBg: string
   iconColor: string
   valueColor: string
-  sub?: string
 }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 px-5 py-4">
@@ -322,7 +324,6 @@ function SummaryCard({
         </div>
       </div>
       <p className={cn('text-xl font-bold tabular-nums leading-tight', valueColor)}>{value}</p>
-      {sub && <p className="text-xs text-gray-400 mt-0.5">{sub}</p>}
     </div>
   )
 }

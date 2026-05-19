@@ -112,6 +112,48 @@ export async function getExpensesByCategory(month: number, year: number): Promis
   return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
 }
 
+export async function getIncomeByCategory(month: number, year: number): Promise<CategorySpending[]> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { from, to } = monthRange(month, year)
+
+  const { data } = await supabase
+    .from('transactions')
+    .select('amount, category:categories(id, name, icon, color)')
+    .eq('user_id', user.id)
+    .eq('type', 'income')
+    .gte('date', from)
+    .lt('date', to)
+
+  if (!data) return []
+
+  const map = new Map<string, CategorySpending>()
+
+  for (const tx of data as unknown as Array<{
+    amount: number
+    category: { id: string; name: string; icon: string | null; color: string | null } | null
+  }>) {
+    const cat = tx.category
+    const key = cat?.id ?? '__none__'
+    const existing = map.get(key)
+    if (existing) {
+      existing.amount += tx.amount
+    } else {
+      map.set(key, {
+        category_id: cat?.id ?? '',
+        name: cat?.name ?? 'Sem categoria',
+        icon: cat?.icon ?? null,
+        color: cat?.color ?? '#94a3b8',
+        amount: tx.amount,
+      })
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+}
+
 export async function getMonthlyOverview(): Promise<MonthlyPoint[]> {
   const supabase = await createClient()
 
