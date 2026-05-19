@@ -159,17 +159,15 @@ export default async function DashboardPage({
       )}
 
       {/* ── Charts ───────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-100 p-5">
-          <h2 className="text-sm font-semibold text-gray-900 mb-4">
+      <div className="grid grid-cols-1 gap-4">
+        <div className="bg-white rounded-2xl border border-gray-100 p-5">
+          <h2 className="text-sm font-semibold text-gray-900 mb-5">
             Despesas por categoria
           </h2>
-          <div className="h-64">
-            <ExpensesByCategoryChart data={expensesByCategory} />
-          </div>
+          <ExpensesByCategoryChart data={expensesByCategory} />
         </div>
 
-        <div className="lg:col-span-3 bg-white rounded-2xl border border-gray-100 p-5">
+        <div className="bg-white rounded-2xl border border-gray-100 p-5">
           <h2 className="text-sm font-semibold text-gray-900 mb-4">
             Receitas vs Despesas — últimos 6 meses
           </h2>

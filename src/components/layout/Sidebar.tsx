@@ -24,6 +24,7 @@ const navItems = [
   { href: '/transactions',           label: 'Transações',   icon: ArrowLeftRight },
   { href: '/transactions/recurring', label: 'Recorrências', icon: RefreshCw },
   { href: '/accounts',               label: 'Contas',       icon: Wallet },
+  { href: '/investments',            label: 'Investimentos', icon: TrendingUp },
   { href: '/categories',             label: 'Categorias',   icon: Tag },
   { href: '/budgets',                label: 'Orçamentos',   icon: PieChart },
   { href: '/goals',                  label: 'Metas',        icon: Target },

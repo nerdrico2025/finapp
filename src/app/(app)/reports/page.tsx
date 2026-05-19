@@ -99,7 +99,7 @@ export default async function ReportsPage({
         <h2 className="text-sm font-semibold text-gray-900 mb-5">
           Despesas por categoria
         </h2>
-        <ExpensesByCategoryChart data={expensesByCategory} variant="detailed" />
+        <ExpensesByCategoryChart data={expensesByCategory} />
       </div>
 
       {/* ── Expense Table ────────────────────────────────────────────────── */}
