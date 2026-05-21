@@ -115,6 +115,22 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
+  let nextDate: string | undefined
+  if (formData.start_date !== undefined) {
+    const today = todayStr()
+    const frequency = formData.frequency ?? (
+      await supabase.from('recurring_rules').select('frequency').eq('id', id).eq('user_id', user.id).single()
+    ).data?.frequency as RecurrenceFrequency | undefined
+
+    if (formData.start_date >= today) {
+      nextDate = formData.start_date
+    } else {
+      let d = formData.start_date
+      while (d < today) d = addPeriod(d, frequency ?? 'monthly')
+      nextDate = d
+    }
+  }
+
   const { error } = await supabase
     .from('recurring_rules')
     .update({
@@ -127,6 +143,7 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
       ...(formData.start_date  !== undefined && { start_date: formData.start_date }),
       ...(formData.end_date    !== undefined && { end_date: formData.end_date }),
       ...(formData.auto_create !== undefined && { auto_create: formData.auto_create }),
+      ...(nextDate             !== undefined && { next_date: nextDate }),
     })
     .eq('id', id)
     .eq('user_id', user.id)
