@@ -3,8 +3,8 @@
 import { useRouter, usePathname } from 'next/navigation'
 import { useState, useCallback } from 'react'
 import {
-  Plus, Upload, ChevronLeft, ChevronRight, Trash2,
-  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X, Filter,
+  Plus, Upload, ChevronLeft, ChevronRight, Trash2, Pencil,
+  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -44,7 +44,7 @@ interface Props {
   filters: Filters
 }
 
-type Modal = 'closed' | 'create' | 'import'
+type Modal = 'closed' | 'create' | 'import' | 'edit'
 
 export function TransactionsClient({
   transactions,
@@ -57,6 +57,17 @@ export function TransactionsClient({
   const pathname = usePathname()
   const [modal, setModal] = useState<Modal>('closed')
   const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [editingTx, setEditingTx] = useState<TransactionWithRelations | null>(null)
+
+  function openEdit(tx: TransactionWithRelations) {
+    setEditingTx(tx)
+    setModal('edit')
+  }
+
+  function closeEdit() {
+    setModal('closed')
+    setEditingTx(null)
+  }
 
   const PAGE_SIZE = 20
   const totalPages = Math.ceil(totalCount / PAGE_SIZE)
@@ -259,6 +270,7 @@ export function TransactionsClient({
                   tx={tx}
                   deleting={deletingId === tx.id}
                   onDelete={() => handleDelete(tx.id)}
+                  onEdit={() => openEdit(tx)}
                 />
               ))}
             </ul>
@@ -314,6 +326,20 @@ export function TransactionsClient({
           />
         </Modal>
       )}
+
+      {/* Edit modal */}
+      {modal === 'edit' && editingTx && (
+        <Modal title="Editar transação" onClose={closeEdit} wide>
+          <TransactionForm
+            accounts={accounts}
+            categories={categories}
+            initialValues={editingTx}
+            transactionId={editingTx.id}
+            onSuccess={() => { toast.success('Transação atualizada!'); closeEdit(); router.refresh() }}
+            onCancel={closeEdit}
+          />
+        </Modal>
+      )}
     </>
   )
 }
@@ -324,10 +350,12 @@ function TransactionRow({
   tx,
   deleting,
   onDelete,
+  onEdit,
 }: {
   tx: TransactionWithRelations
   deleting: boolean
   onDelete: () => void
+  onEdit: () => void
 }) {
   const isIncome = tx.type === 'income'
   const isTransfer = tx.type === 'transfer'
@@ -381,14 +409,22 @@ function TransactionRow({
         {isIncome ? '+' : isTransfer ? '' : '-'}{formatCurrency(tx.amount)}
       </p>
 
-      {/* Delete */}
-      <button
-        onClick={onDelete}
-        disabled={deleting}
-        className="opacity-0 group-hover:opacity-100 p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all disabled:opacity-50"
-      >
-        <Trash2 className="w-3.5 h-3.5" />
-      </button>
+      {/* Actions */}
+      <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all">
+        <button
+          onClick={onEdit}
+          className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+        >
+          <Pencil className="w-3.5 h-3.5" />
+        </button>
+        <button
+          onClick={onDelete}
+          disabled={deleting}
+          className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+        >
+          <Trash2 className="w-3.5 h-3.5" />
+        </button>
+      </div>
     </li>
   )
 }

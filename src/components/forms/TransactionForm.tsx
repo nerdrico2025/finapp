@@ -6,10 +6,10 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, AlertTriangle, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
-import { createTransaction } from '@/lib/actions/transactions'
-import { formatCurrency, formatDate } from '@/lib/utils/format'
+import { createTransaction, updateTransaction } from '@/lib/actions/transactions'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import type { Account, Category } from '@/types'
+import type { TransactionWithRelations } from '@/lib/actions/transactions'
 
 const transactionSchema = z.object({
   type: z.enum(['income', 'expense', 'transfer']),
@@ -34,6 +34,8 @@ interface TransactionFormProps {
   accounts: Account[]
   categories: Category[]
   defaultType?: 'income' | 'expense' | 'transfer'
+  initialValues?: TransactionWithRelations
+  transactionId?: string
   onSuccess: () => void
   onCancel: () => void
 }
@@ -42,9 +44,12 @@ export function TransactionForm({
   accounts,
   categories,
   defaultType = 'expense',
+  initialValues,
+  transactionId,
   onSuccess,
   onCancel,
 }: TransactionFormProps) {
+  const isEditing = !!transactionId
   const [serverError, setServerError] = useState<string | null>(null)
   const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
   const [pendingData, setPendingData] = useState<TransactionFormRaw | null>(null)
@@ -60,12 +65,24 @@ export function TransactionForm({
     formState: { errors, isSubmitting },
   } = useForm<TransactionFormRaw>({
     resolver: zodResolver(transactionSchema),
-    defaultValues: {
-      type: defaultType,
-      date: today,
-      amount: '',
-      account_id: accounts[0]?.id ?? '',
-    },
+    defaultValues: initialValues
+      ? {
+          type: initialValues.type,
+          amount: String(initialValues.amount),
+          date: initialValues.date,
+          account_id: initialValues.account_id,
+          category_id: initialValues.category_id ?? '',
+          description: initialValues.description ?? '',
+          notes: initialValues.notes ?? '',
+          destination_account_id: initialValues.destination_account_id ?? '',
+          transfer_amount: initialValues.transfer_amount ? String(initialValues.transfer_amount) : '',
+        }
+      : {
+          type: defaultType,
+          date: today,
+          amount: '',
+          account_id: accounts[0]?.id ?? '',
+        },
   })
 
   const type = watch('type')
@@ -76,7 +93,7 @@ export function TransactionForm({
   async function submitForm(data: TransactionFormRaw, force = false) {
     setServerError(null)
 
-    const result = await createTransaction({
+    const payload = {
       type: data.type,
       amount: parseFloat(data.amount) || 0,
       date: data.date,
@@ -86,8 +103,16 @@ export function TransactionForm({
       notes: data.notes || null,
       destination_account_id: data.destination_account_id || null,
       transfer_amount: data.transfer_amount ? parseFloat(data.transfer_amount) : null,
-      force,
-    })
+    }
+
+    if (isEditing) {
+      const result = await updateTransaction(transactionId!, payload)
+      if (result.error) { setServerError(result.error); return }
+      onSuccess()
+      return
+    }
+
+    const result = await createTransaction({ ...payload, force })
 
     if (result.duplicate) {
       setPendingData(data)
@@ -294,7 +319,7 @@ export function TransactionForm({
                   : 'bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400'
             )}
           >
-            {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Salvar'}
+            {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : isEditing ? 'Salvar alterações' : 'Salvar'}
           </button>
         </div>
       </form>
