@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Users,
   X,
+  Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 
@@ -27,8 +28,9 @@ const navItems = [
   { href: '/investments',            label: 'Investimentos', icon: TrendingUp },
   { href: '/categories',             label: 'Categorias',   icon: Tag },
   { href: '/budgets',                label: 'Orçamentos',   icon: PieChart },
-  { href: '/goals',                  label: 'Metas',        icon: Target },
-  { href: '/alerts',                 label: 'Alertas',      icon: Bell },
+  { href: '/goals',                  label: 'Metas',           icon: Target },
+  { href: '/lista-de-sonhos',        label: 'Lista de Sonhos', icon: Sparkles },
+  { href: '/alerts',                 label: 'Alertas',         icon: Bell },
   { href: '/reports',                label: 'Relatórios',   icon: BarChart2 },
 ]
 
