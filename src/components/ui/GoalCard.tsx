@@ -6,6 +6,13 @@ import { cn } from '@/lib/utils/cn'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 import type { GoalWithProgress } from '@/lib/actions/goals'
 
+function calcMonthsRemaining(targetDate: string): number {
+  const today = new Date()
+  const target = new Date(targetDate + 'T00:00:00')
+  return (target.getFullYear() - today.getFullYear()) * 12 +
+         (target.getMonth() - today.getMonth())
+}
+
 interface Props {
   goal: GoalWithProgress
   onContribute: () => void
@@ -18,6 +25,14 @@ export function GoalCard({ goal, onContribute, onEdit, onDelete, onComplete }: P
   const isCompleted = goal.status === 'completed'
   const remaining = goal.target_amount - goal.current_amount
   const isOverdue = goal.days_remaining !== null && goal.days_remaining < 0
+
+  const monthlySavingsMsg = (() => {
+    if (isCompleted || !goal.target_date) return null
+    if (goal.current_amount >= goal.target_amount) return { type: 'achieved' as const }
+    const months = calcMonthsRemaining(goal.target_date)
+    if (months <= 0) return { type: 'expired' as const }
+    return { type: 'monthly' as const, amount: (goal.target_amount - goal.current_amount) / months }
+  })()
 
   // Animate bar from 0 on mount
   const [barWidth, setBarWidth] = useState(0)
@@ -128,6 +143,25 @@ export function GoalCard({ goal, onContribute, onEdit, onDelete, onComplete }: P
             </p>
           </div>
         </div>
+
+        {/* Monthly savings hint */}
+        {monthlySavingsMsg && (
+          <div className="mb-3 pt-2.5 border-t border-gray-50 text-center">
+            {monthlySavingsMsg.type === 'achieved' ? (
+              <p className="text-xs font-medium text-emerald-600">Meta atingida! 🎉</p>
+            ) : monthlySavingsMsg.type === 'expired' ? (
+              <p className="text-xs text-gray-400">Prazo encerrado</p>
+            ) : (
+              <p className="text-xs text-gray-500">
+                Guardar{' '}
+                <span className="font-semibold text-gray-900">
+                  {formatCurrency(monthlySavingsMsg.amount)}/mês
+                </span>
+                {' '}para atingir a meta no prazo
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Footer: deadline + actions */}
         <div className="flex items-center justify-between">

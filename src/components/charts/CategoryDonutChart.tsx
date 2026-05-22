@@ -1,6 +1,6 @@
 'use client'
 
-import { PieChart, Pie, Cell, Tooltip } from 'recharts'
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts'
 import { formatCurrency } from '@/lib/utils/format'
 
 export interface DonutItem {
@@ -79,9 +79,6 @@ function CustomTooltip({ active, payload }: { active?: boolean; payload?: Toolti
 export function CategoryDonutChart({
   data,
   emptyText = 'Nenhum dado no período',
-  size = 320,
-  innerRadius = 80,
-  outerRadius = 140,
 }: Props) {
   if (data.length === 0) {
     return (
@@ -95,31 +92,36 @@ export function CategoryDonutChart({
 
   return (
     <div className="flex flex-col sm:flex-row items-center gap-6">
-      {/* Chart */}
-      <div className="relative shrink-0" style={{ width: size, height: size }}>
-        <PieChart width={size} height={size}>
-          <Pie
-            data={data}
-            cx="50%"
-            cy="50%"
-            innerRadius={innerRadius}
-            outerRadius={outerRadius}
-            paddingAngle={2}
-            dataKey="value"
-            label={SliceLabel}
-            labelLine={false}
-          >
-            {data.map((entry, index) => (
-              <Cell
-                key={entry.id || index}
-                fill={entry.color ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length]}
-                stroke="white"
-                strokeWidth={2}
-              />
-            ))}
-          </Pie>
-          <Tooltip content={<CustomTooltip />} />
-        </PieChart>
+      {/* Chart — responsive square, fills up to 45% of the container (max 400px) */}
+      <div
+        className="relative w-full sm:w-[45%] sm:max-w-[400px] shrink-0"
+        style={{ aspectRatio: '1 / 1' }}
+      >
+        <ResponsiveContainer width="100%" height="100%">
+          <PieChart>
+            <Pie
+              data={data}
+              cx="50%"
+              cy="50%"
+              innerRadius="50%"
+              outerRadius="87%"
+              paddingAngle={2}
+              dataKey="value"
+              label={SliceLabel}
+              labelLine={false}
+            >
+              {data.map((entry, index) => (
+                <Cell
+                  key={entry.id || index}
+                  fill={entry.color ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length]}
+                  stroke="white"
+                  strokeWidth={2}
+                />
+              ))}
+            </Pie>
+            <Tooltip content={<CustomTooltip />} />
+          </PieChart>
+        </ResponsiveContainer>
 
         {/* Center label */}
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -133,7 +135,7 @@ export function CategoryDonutChart({
       </div>
 
       {/* Legend */}
-      <div className="flex-1 w-full space-y-3 max-h-[320px] overflow-y-auto pr-1">
+      <div className="flex-1 w-full space-y-3 max-h-[400px] overflow-y-auto pr-1">
         {data.map((entry, index) => {
           const color = entry.color ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length]
           const pct = total > 0 ? (entry.value / total) * 100 : 0
