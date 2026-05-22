@@ -69,31 +69,6 @@ function generateImportHash(userId: string, amount: number, date: string, descri
     .digest('hex')
 }
 
-async function shiftAccountBalance(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  accountId: string,
-  delta: number
-) {
-  const { data } = await supabase
-    .from('accounts')
-    .select('balance')
-    .eq('id', accountId)
-    .single()
-
-  if (!data) return
-
-  await supabase
-    .from('accounts')
-    .update({ balance: data.balance + delta })
-    .eq('id', accountId)
-}
-
-function transactionDelta(type: TransactionType, amount: number): number {
-  if (type === 'income') return amount
-  if (type === 'expense') return -amount
-  return 0
-}
-
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 export async function getTransactions(filters: TransactionFilters = {}) {
@@ -221,14 +196,6 @@ export async function createTransaction(
 
   if (error) return { error: error.message }
 
-  // Update account balance
-  await shiftAccountBalance(supabase, formData.account_id, transactionDelta(formData.type, formData.amount))
-
-  if (formData.type === 'transfer' && formData.destination_account_id) {
-    const destAmount = formData.transfer_amount ?? formData.amount
-    await shiftAccountBalance(supabase, formData.destination_account_id, destAmount)
-  }
-
   revalidatePath('/transactions')
   revalidatePath('/accounts')
   revalidatePath('/dashboard')
@@ -257,13 +224,6 @@ export async function updateTransaction(
 
   if (!original) return { error: 'Transação não encontrada' }
 
-  // Revert original effect
-  await shiftAccountBalance(supabase, original.account_id, -transactionDelta(original.type, original.amount))
-  if (original.type === 'transfer' && original.destination_account_id) {
-    const origDest = original.transfer_amount ?? original.amount
-    await shiftAccountBalance(supabase, original.destination_account_id, -origDest)
-  }
-
   // Build update payload
   const newType = formData.type ?? original.type
   const newAmount = formData.amount ?? original.amount
@@ -288,21 +248,7 @@ export async function updateTransaction(
     .eq('id', id)
     .eq('user_id', user.id)
 
-  if (error) {
-    // Rollback balance revert for both source and destination
-    await shiftAccountBalance(supabase, original.account_id, transactionDelta(original.type, original.amount))
-    if (original.type === 'transfer' && original.destination_account_id) {
-      const origDest = original.transfer_amount ?? original.amount
-      await shiftAccountBalance(supabase, original.destination_account_id, origDest)
-    }
-    return { error: error.message }
-  }
-
-  // Apply new effect
-  await shiftAccountBalance(supabase, newAccountId, transactionDelta(newType, newAmount))
-  if (newType === 'transfer' && newDestId) {
-    await shiftAccountBalance(supabase, newDestId, newTransferAmount ?? newAmount)
-  }
+  if (error) return { error: error.message }
 
   revalidatePath('/transactions')
   revalidatePath('/accounts')
@@ -335,13 +281,6 @@ export async function deleteTransaction(id: string): Promise<{ error: string | n
     .eq('user_id', user.id)
 
   if (error) return { error: error.message }
-
-  // Revert balance effect
-  await shiftAccountBalance(supabase, original.account_id, -transactionDelta(original.type, original.amount))
-  if (original.type === 'transfer' && original.destination_account_id) {
-    const origDest = original.transfer_amount ?? original.amount
-    await shiftAccountBalance(supabase, original.destination_account_id, -origDest)
-  }
 
   revalidatePath('/transactions')
   revalidatePath('/accounts')
@@ -405,7 +344,6 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         continue
       }
 
-      await shiftAccountBalance(supabase, row.account_id, transactionDelta(type, amount))
       inserted++
     } catch (e) {
       errors++

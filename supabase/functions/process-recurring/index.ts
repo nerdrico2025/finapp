@@ -76,35 +76,19 @@ Deno.serve(async (req) => {
         .eq('date', nextDate)
 
       if (!count || count === 0) {
-        const { data: account } = await supabase
-          .from('accounts')
-          .select('balance')
-          .eq('id', rule.account_id)
-          .single()
+        const { error: txError } = await supabase.from('transactions').insert({
+          user_id: rule.user_id,
+          account_id: rule.account_id,
+          category_id: rule.category_id,
+          type: rule.type,
+          amount: rule.amount,
+          description: rule.name,
+          date: nextDate,
+          status: 'completed',
+          recurring_rule_id: rule.id,
+        })
 
-        const delta = rule.type === 'income' ? rule.amount : -rule.amount
-
-        const [txResult] = await Promise.all([
-          supabase.from('transactions').insert({
-            user_id: rule.user_id,
-            account_id: rule.account_id,
-            category_id: rule.category_id,
-            type: rule.type,
-            amount: rule.amount,
-            description: rule.name,
-            date: nextDate,
-            status: 'completed',
-            recurring_rule_id: rule.id,
-          }),
-          account
-            ? supabase
-                .from('accounts')
-                .update({ balance: account.balance + delta })
-                .eq('id', rule.account_id)
-            : Promise.resolve({ error: null }),
-        ])
-
-        if (!txResult.error) generated++
+        if (!txError) generated++
       }
 
       nextDate = addPeriod(nextDate, rule.frequency as Frequency)
