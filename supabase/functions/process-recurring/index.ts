@@ -15,19 +15,7 @@ function addPeriod(dateStr: string, frequency: Frequency): string {
   return d.toISOString().split('T')[0]
 }
 
-Deno.serve(async (req) => {
-  // Allow cron invocations (no auth header) and authenticated calls
-  const authHeader = req.headers.get('Authorization')
-  const isServiceRole = authHeader?.includes(Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '__none__')
-  const isCron = req.headers.get('x-supabase-cron') === '1'
-
-  if (!isCron && !isServiceRole) {
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-
+Deno.serve(async (_req) => {
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -97,7 +85,7 @@ Deno.serve(async (req) => {
 
     await supabase
       .from('recurring_rules')
-      .update({ next_date: nextDate, last_generated_date: today })
+      .update({ next_date: nextDate })
       .eq('id', rule.id)
   }
 
