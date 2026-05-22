@@ -41,8 +41,11 @@ export default async function DashboardPage({
     year  = currentYear
   }
 
+  // processRecurring must complete before reading balances to avoid a race
+  // condition where getTotalBalance reads mid-update account balances
+  const { generated } = await processRecurring()
+
   const [
-    { generated },
     { total: totalBalance },
     summary,
     expensesByCategory,
@@ -51,7 +54,6 @@ export default async function DashboardPage({
     { data: upcomingAlerts },
     { data: goals },
   ] = await Promise.all([
-    processRecurring(),
     getTotalBalance(),
     getMonthlySummary(month, year),
     getExpensesByCategory(month, year),

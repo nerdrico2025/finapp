@@ -207,11 +207,14 @@ export async function processRecurring(): Promise<{ generated: number }> {
 
   const today = todayStr()
 
+  // Only process rules that should be auto-created; manual rules (auto_create=false)
+  // are reminders only — their next_date must not advance without a transaction being created
   const { data: rules } = await supabase
     .from('recurring_rules')
     .select('*')
     .eq('user_id', user.id)
     .eq('is_active', true)
+    .eq('auto_create', true)
     .lte('next_date', today)
 
   if (!rules || rules.length === 0) return { generated: 0 }
@@ -229,7 +232,14 @@ export async function processRecurring(): Promise<{ generated: number }> {
     while (nextDate <= today && iterations < MAX_ITERATIONS) {
       if (rule.end_date && nextDate > rule.end_date) break
 
-      if (rule.auto_create) {
+      // Idempotency: skip if transaction already exists for this rule+date
+      const { count } = await supabase
+        .from('transactions')
+        .select('id', { count: 'exact', head: true })
+        .eq('recurring_rule_id', rule.id)
+        .eq('date', nextDate)
+
+      if (!count || count === 0) {
         const { data: account } = await supabase
           .from('accounts')
           .select('balance')
@@ -238,7 +248,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
 
         const delta = rule.type === 'income' ? rule.amount : -rule.amount
 
-        await Promise.all([
+        const [txResult] = await Promise.all([
           supabase.from('transactions').insert({
             user_id: user.id,
             account_id: rule.account_id,
@@ -258,7 +268,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
             : Promise.resolve(),
         ])
 
-        generated++
+        if (!txResult.error) generated++
       }
 
       nextDate = addPeriod(nextDate, rule.frequency)

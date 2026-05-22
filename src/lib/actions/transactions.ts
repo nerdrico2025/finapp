@@ -289,8 +289,12 @@ export async function updateTransaction(
     .eq('user_id', user.id)
 
   if (error) {
-    // Rollback balance revert
+    // Rollback balance revert for both source and destination
     await shiftAccountBalance(supabase, original.account_id, transactionDelta(original.type, original.amount))
+    if (original.type === 'transfer' && original.destination_account_id) {
+      const origDest = original.transfer_amount ?? original.amount
+      await shiftAccountBalance(supabase, original.destination_account_id, origDest)
+    }
     return { error: error.message }
   }
 

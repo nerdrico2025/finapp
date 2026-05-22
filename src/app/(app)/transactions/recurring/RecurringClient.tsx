@@ -286,8 +286,10 @@ function RuleItem({
   onToggle: () => void
 }) {
   const today = new Date().toISOString().split('T')[0]
-  const isOverdue = rule.is_active && rule.next_date < today
-  const isDueToday = rule.is_active && rule.next_date === today
+  // "Vencido" only applies to manual rules (auto_create=false) — automatic rules
+  // are handled by the cron, so overdue is expected and not an actionable alert
+  const isOverdue = rule.is_active && !rule.auto_create && rule.next_date < today
+  const isDueToday = rule.is_active && !rule.auto_create && rule.next_date === today
 
   return (
     <li className={cn(
