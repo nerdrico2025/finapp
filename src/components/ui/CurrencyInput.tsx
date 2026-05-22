@@ -12,21 +12,23 @@ interface CurrencyInputProps {
   className?: string
 }
 
-function numericToDisplay(val: string | undefined): string {
-  if (!val) return ''
-  const num = parseFloat(val)
-  if (isNaN(num) || num === 0) return ''
+// "123456" (cents as string) → "1.234,56"
+function digitsToDisplay(digits: string): string {
+  if (!digits) return ''
+  const cents = parseInt(digits, 10)
+  if (!cents) return ''
   return new Intl.NumberFormat('pt-BR', {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(num)
+  }).format(cents / 100)
 }
 
-function displayToNumeric(display: string): string {
-  if (!display) return ''
-  const cleaned = display.replace(/\./g, '').replace(',', '.')
-  const num = parseFloat(cleaned)
-  return isNaN(num) ? '' : String(num)
+// "1234.56" (numeric) → "123456" (cents digits)
+function numericToDigits(val: string | undefined): string {
+  if (!val) return ''
+  const num = parseFloat(val)
+  if (!num) return ''
+  return String(Math.round(num * 100))
 }
 
 export function CurrencyInput({
@@ -37,26 +39,18 @@ export function CurrencyInput({
   disabled,
   className,
 }: CurrencyInputProps) {
-  const [display, setDisplay] = useState(() => numericToDisplay(value))
-  const [focused, setFocused] = useState(false)
+  const [digits, setDigits] = useState(() => numericToDigits(value))
 
+  // Sync when external value changes (e.g. form pre-fill on edit)
   useEffect(() => {
-    if (!focused) {
-      setDisplay(numericToDisplay(value))
-    }
-  }, [value, focused])
+    setDigits(numericToDigits(value))
+  }, [value])
 
   function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const sanitized = e.target.value.replace(/[^\d,.]/g, '')
-    setDisplay(sanitized)
-    onChange?.(displayToNumeric(sanitized))
-  }
-
-  function handleBlur() {
-    setFocused(false)
-    const numeric = displayToNumeric(display)
-    if (numeric) setDisplay(numericToDisplay(numeric))
-    onBlur?.()
+    // Strip everything but digits, cap at 13 (= R$ 99.999.999.999,99)
+    const newDigits = e.target.value.replace(/\D/g, '').slice(0, 13)
+    setDigits(newDigits)
+    onChange?.(newDigits ? String(parseInt(newDigits, 10) / 100) : '')
   }
 
   return (
@@ -66,11 +60,10 @@ export function CurrencyInput({
       </span>
       <input
         type="text"
-        inputMode="decimal"
-        value={display}
+        inputMode="numeric"
+        value={digitsToDisplay(digits)}
         onChange={handleChange}
-        onBlur={handleBlur}
-        onFocus={() => setFocused(true)}
+        onBlur={onBlur}
         placeholder={placeholder}
         disabled={disabled}
         className={cn(
