@@ -23,6 +23,9 @@ export interface Database {
           created_by: string | null
           created_at: string
           updated_at: string
+          google_access_token: string | null
+          google_refresh_token: string | null
+          google_token_expiry: string | null
         }
         Insert: {
           id: string
@@ -35,6 +38,9 @@ export interface Database {
           created_by?: string | null
           created_at?: string
           updated_at?: string
+          google_access_token?: string | null
+          google_refresh_token?: string | null
+          google_token_expiry?: string | null
         }
         Update: {
           email?: string
@@ -45,6 +51,9 @@ export interface Database {
           role?: 'admin' | 'user'
           created_by?: string | null
           updated_at?: string
+          google_access_token?: string | null
+          google_refresh_token?: string | null
+          google_token_expiry?: string | null
         }
         Relationships: never[]
       }
@@ -249,6 +258,7 @@ export interface Database {
           is_active: boolean
           created_at: string
           updated_at: string
+          google_event_id: string | null
         }
         Insert: {
           id?: string
@@ -260,6 +270,7 @@ export interface Database {
           is_active?: boolean
           created_at?: string
           updated_at?: string
+          google_event_id?: string | null
         }
         Update: {
           name?: string
@@ -268,6 +279,7 @@ export interface Database {
           days_before?: number
           is_active?: boolean
           updated_at?: string
+          google_event_id?: string | null
         }
         Relationships: never[]
       }
