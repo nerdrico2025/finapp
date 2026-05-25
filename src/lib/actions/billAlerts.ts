@@ -2,7 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import { upsertCalendarEvent, deleteCalendarEvent } from '@/lib/google/calendar'
+import { upsertCalendarEvents, deleteCalendarEvent } from '@/lib/google/calendar'
 import type { BillAlert } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -12,6 +12,7 @@ export interface BillAlertFormData {
   amount?: number | null
   day_of_month: number
   days_before: number
+  end_date?: string | null
   is_active?: boolean
 }
 
@@ -72,22 +73,26 @@ export async function createBillAlert(formData: BillAlertFormData) {
     amount: formData.amount ?? null,
     day_of_month: formData.day_of_month,
     days_before: formData.days_before,
+    end_date: formData.end_date ?? null,
     is_active: formData.is_active ?? true,
   }).select('id').single()
 
   if (error) return { error: error.message }
 
   try {
-    const eventId = await upsertCalendarEvent({
+    const { reminderEventId, dueEventId } = await upsertCalendarEvents({
       userId: user.id,
-      alertId: inserted.id,
       name: formData.name,
       amount: formData.amount,
       dayOfMonth: formData.day_of_month,
       daysBefore: formData.days_before,
+      endDate: formData.end_date,
     })
-    if (eventId) {
-      await supabase.from('bill_alerts').update({ google_event_id: eventId }).eq('id', inserted.id)
+    if (reminderEventId || dueEventId) {
+      await supabase.from('bill_alerts').update({
+        google_reminder_event_id: reminderEventId,
+        google_event_id: dueEventId,
+      }).eq('id', inserted.id)
     }
   } catch { /* Google Calendar is optional */ }
 
@@ -103,7 +108,7 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
 
   const { data: existing } = await supabase
     .from('bill_alerts')
-    .select('name, amount, day_of_month, days_before, google_event_id')
+    .select('name, amount, day_of_month, days_before, end_date, google_event_id, google_reminder_event_id')
     .eq('id', id)
     .eq('user_id', user.id)
     .single()
@@ -115,6 +120,7 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
       ...(formData.amount       !== undefined && { amount: formData.amount }),
       ...(formData.day_of_month !== undefined && { day_of_month: formData.day_of_month }),
       ...(formData.days_before  !== undefined && { days_before: formData.days_before }),
+      ...(formData.end_date     !== undefined && { end_date: formData.end_date }),
       ...(formData.is_active    !== undefined && { is_active: formData.is_active }),
     })
     .eq('id', id)
@@ -125,18 +131,20 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
   if (existing) {
     try {
       const merged = { ...existing, ...formData }
-      const eventId = await upsertCalendarEvent({
+      const { reminderEventId, dueEventId } = await upsertCalendarEvents({
         userId: user.id,
-        alertId: id,
         name: merged.name ?? existing.name,
         amount: merged.amount ?? existing.amount,
         dayOfMonth: merged.day_of_month ?? existing.day_of_month,
         daysBefore: merged.days_before ?? existing.days_before,
-        existingEventId: existing.google_event_id,
+        endDate: merged.end_date ?? existing.end_date,
+        existingReminderEventId: existing.google_reminder_event_id,
+        existingDueEventId: existing.google_event_id,
       })
-      if (eventId && eventId !== existing.google_event_id) {
-        await supabase.from('bill_alerts').update({ google_event_id: eventId }).eq('id', id)
-      }
+      await supabase.from('bill_alerts').update({
+        google_reminder_event_id: reminderEventId,
+        google_event_id: dueEventId,
+      }).eq('id', id)
     } catch { /* Google Calendar is optional */ }
   }
 
@@ -179,12 +187,19 @@ export async function deleteBillAlert(id: string) {
   try {
     const { data: alert } = await supabase
       .from('bill_alerts')
-      .select('google_event_id')
+      .select('google_event_id, google_reminder_event_id')
       .eq('id', id)
       .eq('user_id', user.id)
       .single()
-    if (alert?.google_event_id) {
-      await deleteCalendarEvent(user.id, alert.google_event_id)
+    if (alert) {
+      await Promise.all([
+        alert.google_event_id
+          ? deleteCalendarEvent(user.id, alert.google_event_id)
+          : Promise.resolve(),
+        alert.google_reminder_event_id
+          ? deleteCalendarEvent(user.id, alert.google_reminder_event_id)
+          : Promise.resolve(),
+      ])
     }
   } catch { /* Google Calendar is optional */ }
 

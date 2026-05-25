@@ -19,6 +19,7 @@ const schema = z.object({
     (v) => { const n = parseInt(v); return n >= 1 && n <= 30 },
     'Deve ser entre 1 e 30 dias'
   ),
+  end_date: z.string().optional(),
   is_active: z.boolean(),
 })
 
@@ -46,6 +47,7 @@ export function BillAlertForm({ defaultValues, onSubmit, onCancel, submitLabel =
       amount: defaultValues?.amount != null ? String(defaultValues.amount) : '',
       day_of_month: defaultValues?.day_of_month ? String(defaultValues.day_of_month) : '',
       days_before: defaultValues?.days_before ? String(defaultValues.days_before) : '3',
+      end_date: defaultValues?.end_date ?? '',
       is_active: defaultValues?.is_active ?? true,
     },
   })
@@ -57,6 +59,7 @@ export function BillAlertForm({ defaultValues, onSubmit, onCancel, submitLabel =
       amount: raw.amount ? parseFloat(raw.amount) : null,
       day_of_month: parseInt(raw.day_of_month),
       days_before: parseInt(raw.days_before),
+      end_date: raw.end_date || null,
       is_active: raw.is_active,
     })
     if (result.error) setServerError(result.error)
@@ -141,6 +144,18 @@ export function BillAlertForm({ defaultValues, onSubmit, onCancel, submitLabel =
             <p className="mt-1 text-xs text-red-600">{errors.days_before.message}</p>
           )}
         </div>
+      </div>
+
+      {/* End date */}
+      <div>
+        <label className="block text-sm font-medium text-gray-700 mb-1.5">
+          Repetir até <span className="text-gray-400 font-normal">(opcional)</span>
+        </label>
+        <input
+          type="date"
+          {...register('end_date')}
+          className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+        />
       </div>
 
       {/* Active */}

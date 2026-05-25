@@ -256,9 +256,11 @@ export interface Database {
           day_of_month: number
           days_before: number
           is_active: boolean
+          end_date: string | null
           created_at: string
           updated_at: string
           google_event_id: string | null
+          google_reminder_event_id: string | null
         }
         Insert: {
           id?: string
@@ -268,9 +270,11 @@ export interface Database {
           day_of_month: number
           days_before?: number
           is_active?: boolean
+          end_date?: string | null
           created_at?: string
           updated_at?: string
           google_event_id?: string | null
+          google_reminder_event_id?: string | null
         }
         Update: {
           name?: string
@@ -278,8 +282,10 @@ export interface Database {
           day_of_month?: number
           days_before?: number
           is_active?: boolean
+          end_date?: string | null
           updated_at?: string
           google_event_id?: string | null
+          google_reminder_event_id?: string | null
         }
         Relationships: never[]
       }

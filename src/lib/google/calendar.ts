@@ -47,52 +47,47 @@ async function getValidAccessToken(userId: string): Promise<string | null> {
   return tokens.access_token
 }
 
-function getNextAlertDate(dayOfMonth: number, daysBefore: number): string {
+function getNextDateForDay(day: number): string {
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-
-  const alertDay = dayOfMonth - daysBefore
-
-  let candidate = new Date(today.getFullYear(), today.getMonth(), alertDay)
+  let candidate = new Date(today.getFullYear(), today.getMonth(), day)
   if (candidate < today) {
-    candidate = new Date(today.getFullYear(), today.getMonth() + 1, alertDay)
+    candidate = new Date(today.getFullYear(), today.getMonth() + 1, day)
   }
-
   return candidate.toISOString().split('T')[0]
 }
 
-export async function upsertCalendarEvent(params: {
-  userId: string
-  alertId: string
-  name: string
-  amount?: number | null
-  dayOfMonth: number
-  daysBefore: number
-  existingEventId?: string | null
-}): Promise<string | null> {
-  const accessToken = await getValidAccessToken(params.userId)
-  if (!accessToken) return null
+function buildRRule(endDate?: string | null): string {
+  if (!endDate) return 'RRULE:FREQ=MONTHLY'
+  return `RRULE:FREQ=MONTHLY;UNTIL=${endDate.replace(/-/g, '')}`
+}
 
-  const nextAlertDate = getNextAlertDate(params.dayOfMonth, params.daysBefore)
-
+async function upsertSingleEvent(
+  accessToken: string,
+  summary: string,
+  description: string,
+  date: string,
+  rrule: string,
+  existingEventId?: string | null,
+): Promise<string | null> {
   const event = {
-    summary: `🔔 ${params.name}${params.amount ? ` — ${formatCurrency(params.amount)}` : ''}`,
-    description: `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`,
-    start: { date: nextAlertDate },
-    end: { date: nextAlertDate },
-    recurrence: ['RRULE:FREQ=YEARLY'],
+    summary,
+    description,
+    start: { dateTime: `${date}T09:00:00`, timeZone: 'America/Sao_Paulo' },
+    end: { dateTime: `${date}T09:30:00`, timeZone: 'America/Sao_Paulo' },
+    recurrence: [rrule],
     reminders: {
       useDefault: false,
-      overrides: [{ method: 'popup', minutes: 480 }],
+      overrides: [{ method: 'popup', minutes: 0 }],
     },
   }
 
-  const url = params.existingEventId
-    ? `${CALENDAR_API}/calendars/primary/events/${params.existingEventId}`
+  const url = existingEventId
+    ? `${CALENDAR_API}/calendars/primary/events/${existingEventId}`
     : `${CALENDAR_API}/calendars/primary/events`
 
   const res = await fetch(url, {
-    method: params.existingEventId ? 'PATCH' : 'POST',
+    method: existingEventId ? 'PATCH' : 'POST',
     headers: {
       Authorization: `Bearer ${accessToken}`,
       'Content-Type': 'application/json',
@@ -101,9 +96,49 @@ export async function upsertCalendarEvent(params: {
   })
 
   if (!res.ok) return null
-
   const data = await res.json()
   return data.id ?? null
+}
+
+export async function upsertCalendarEvents(params: {
+  userId: string
+  name: string
+  amount?: number | null
+  dayOfMonth: number
+  daysBefore: number
+  endDate?: string | null
+  existingReminderEventId?: string | null
+  existingDueEventId?: string | null
+}): Promise<{ reminderEventId: string | null; dueEventId: string | null }> {
+  const accessToken = await getValidAccessToken(params.userId)
+  if (!accessToken) return { reminderEventId: null, dueEventId: null }
+
+  const reminderDay = params.dayOfMonth - params.daysBefore
+  const reminderDate = getNextDateForDay(reminderDay)
+  const dueDate = getNextDateForDay(params.dayOfMonth)
+  const rrule = buildRRule(params.endDate)
+  const amountStr = params.amount ? ` — ${formatCurrency(params.amount)}` : ''
+
+  const [reminderEventId, dueEventId] = await Promise.all([
+    upsertSingleEvent(
+      accessToken,
+      `🔔 Lembrete: ${params.name}`,
+      `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`,
+      reminderDate,
+      rrule,
+      params.existingReminderEventId,
+    ),
+    upsertSingleEvent(
+      accessToken,
+      `📅 Vence hoje: ${params.name}${amountStr}`,
+      `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`,
+      dueDate,
+      rrule,
+      params.existingDueEventId,
+    ),
+  ])
+
+  return { reminderEventId, dueEventId }
 }
 
 export async function deleteCalendarEvent(
