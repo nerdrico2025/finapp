@@ -1,11 +1,11 @@
 'use client'
 
-import { useState } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Plus, Pencil, Trash2, X,
   Bell, BellOff, AlertTriangle, CalendarClock,
-  ToggleLeft, ToggleRight,
+  ToggleLeft, ToggleRight, Calendar, CheckCircle2,
 } from 'lucide-react'
 import {
   createBillAlert,
@@ -30,14 +30,23 @@ type Modal =
 interface Props {
   alerts: BillAlert[]
   upcoming: UpcomingAlert[]
+  googleConnected: boolean
 }
 
-export function AlertsClient({ alerts, upcoming }: Props) {
+export function AlertsClient({ alerts, upcoming, googleConnected }: Props) {
   const [modal, setModal] = useState<Modal>({ type: 'closed' })
   const [toggling, setToggling] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const router = useRouter()
+  const searchParams = useSearchParams()
+
+  useEffect(() => {
+    if (searchParams.get('connected') === 'true')
+      toast.success('Google Calendar conectado! Novos alertas serão sincronizados.')
+    if (searchParams.get('error') === 'true')
+      toast.error('Erro ao conectar Google Calendar.')
+  }, [])
 
   function refresh() {
     router.refresh()
@@ -95,13 +104,28 @@ export function AlertsClient({ alerts, upcoming }: Props) {
               Receba avisos antes das contas vencerem ({alerts.filter((a) => a.is_active).length} ativos)
             </p>
           </div>
-          <button
-            onClick={() => setModal({ type: 'create' })}
-            className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-xl transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Novo alerta
-          </button>
+          <div className="flex items-center gap-2">
+            {googleConnected ? (
+              <div className="flex items-center gap-1.5 px-3 py-2 bg-emerald-50 text-emerald-700 text-sm font-medium rounded-xl">
+                <CheckCircle2 className="w-4 h-4" />
+                Google Calendar ativo
+              </div>
+            ) : (
+              <a href="/api/auth/google">
+                <button className="flex items-center gap-2 px-4 py-2 border border-gray-300 text-gray-600 text-sm font-medium rounded-xl hover:bg-gray-50 transition-colors">
+                  <Calendar className="w-4 h-4" />
+                  Conectar Google Calendar
+                </button>
+              </a>
+            )}
+            <button
+              onClick={() => setModal({ type: 'create' })}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-xl transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Novo alerta
+            </button>
+          </div>
         </div>
 
         {/* Urgent banner */}

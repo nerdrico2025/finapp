@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { upsertCalendarEvent, deleteCalendarEvent } from '@/lib/google/calendar'
 import type { BillAlert } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -65,16 +66,31 @@ export async function createBillAlert(formData: BillAlertFormData) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
-  const { error } = await supabase.from('bill_alerts').insert({
+  const { data: inserted, error } = await supabase.from('bill_alerts').insert({
     user_id: user.id,
     name: formData.name,
     amount: formData.amount ?? null,
     day_of_month: formData.day_of_month,
     days_before: formData.days_before,
     is_active: formData.is_active ?? true,
-  })
+  }).select('id').single()
 
   if (error) return { error: error.message }
+
+  try {
+    const eventId = await upsertCalendarEvent({
+      userId: user.id,
+      alertId: inserted.id,
+      name: formData.name,
+      amount: formData.amount,
+      dayOfMonth: formData.day_of_month,
+      daysBefore: formData.days_before,
+    })
+    if (eventId) {
+      await supabase.from('bill_alerts').update({ google_event_id: eventId }).eq('id', inserted.id)
+    }
+  } catch { /* Google Calendar is optional */ }
+
   revalidatePath('/alerts')
   return { error: null }
 }
@@ -84,6 +100,13 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
+
+  const { data: existing } = await supabase
+    .from('bill_alerts')
+    .select('name, amount, day_of_month, days_before, google_event_id')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single()
 
   const { error } = await supabase
     .from('bill_alerts')
@@ -98,6 +121,25 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
     .eq('user_id', user.id)
 
   if (error) return { error: error.message }
+
+  if (existing) {
+    try {
+      const merged = { ...existing, ...formData }
+      const eventId = await upsertCalendarEvent({
+        userId: user.id,
+        alertId: id,
+        name: merged.name ?? existing.name,
+        amount: merged.amount ?? existing.amount,
+        dayOfMonth: merged.day_of_month ?? existing.day_of_month,
+        daysBefore: merged.days_before ?? existing.days_before,
+        existingEventId: existing.google_event_id,
+      })
+      if (eventId && eventId !== existing.google_event_id) {
+        await supabase.from('bill_alerts').update({ google_event_id: eventId }).eq('id', id)
+      }
+    } catch { /* Google Calendar is optional */ }
+  }
+
   revalidatePath('/alerts')
   return { error: null }
 }
@@ -133,6 +175,18 @@ export async function deleteBillAlert(id: string) {
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
+
+  try {
+    const { data: alert } = await supabase
+      .from('bill_alerts')
+      .select('google_event_id')
+      .eq('id', id)
+      .eq('user_id', user.id)
+      .single()
+    if (alert?.google_event_id) {
+      await deleteCalendarEvent(user.id, alert.google_event_id)
+    }
+  } catch { /* Google Calendar is optional */ }
 
   const { error } = await supabase
     .from('bill_alerts')
