@@ -165,14 +165,15 @@ function ConsolidadoChart({ chartData }: { chartData: ConsolidadoData['chartData
             width={56}
           />
           <Tooltip
-            formatter={(value: number, name: string) => {
+            formatter={(value, name) => {
               const labels: Record<string, string> = {
                 pfIncome: 'PF Receitas',
                 pjIncome: 'PJ Receitas',
                 pfExpenses: 'PF Despesas',
                 pjExpenses: 'PJ Despesas',
               }
-              return [fmt(value), labels[name] ?? name]
+              const key = String(name ?? '')
+              return [fmt(Number(value ?? 0)), labels[key] ?? key]
             }}
             contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e5e7eb' }}
           />
