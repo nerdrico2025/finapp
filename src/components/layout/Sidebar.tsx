@@ -5,13 +5,15 @@ import { usePathname } from 'next/navigation'
 import {
   LayoutDashboard,
   ArrowLeftRight,
-  RefreshCw,
   Wallet,
   Tag,
   PieChart,
   Target,
   Bell,
   BarChart2,
+  BarChart3,
+  FileBarChart,
+  Layers,
   Settings,
   TrendingUp,
   Users,
@@ -19,20 +21,66 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { useEntityContext } from '@/contexts/EntityContext'
+import { EntitySwitcher } from './EntitySwitcher'
 
-const navItems = [
-  { href: '/dashboard',              label: 'Dashboard',    icon: LayoutDashboard },
-  { href: '/transactions',           label: 'Transações',   icon: ArrowLeftRight },
-  { href: '/transactions/recurring', label: 'Recorrências', icon: RefreshCw },
-  { href: '/accounts',               label: 'Contas',       icon: Wallet },
-  { href: '/investments',            label: 'Investimentos', icon: TrendingUp },
-  { href: '/categories',             label: 'Categorias',   icon: Tag },
-  { href: '/budgets',                label: 'Orçamentos',   icon: PieChart },
-  { href: '/goals',                  label: 'Metas',           icon: Target },
-  { href: '/lista-de-sonhos',        label: 'Lista de Sonhos', icon: Sparkles },
-  { href: '/alerts',                 label: 'Alertas',         icon: Bell },
-  { href: '/reports',                label: 'Relatórios',   icon: BarChart2 },
+// ─── Nav configs ──────────────────────────────────────────────────────────────
+
+type NavItem = {
+  href: string
+  label: string
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number | string }>
+  badge?: 'alerts'
+}
+
+const PF_NAV: NavItem[] = [
+  { href: '/dashboard',       label: 'Dashboard',       icon: LayoutDashboard },
+  { href: '/transactions',    label: 'Transações',      icon: ArrowLeftRight },
+  { href: '/accounts',        label: 'Contas',          icon: Wallet },
+  { href: '/categories',      label: 'Categorias',      icon: Tag },
+  { href: '/budgets',         label: 'Orçamentos',      icon: PieChart },
+  { href: '/goals',           label: 'Metas',           icon: Target },
+  { href: '/investments',     label: 'Investimentos',   icon: TrendingUp },
+  { href: '/lista-de-sonhos', label: 'Lista de Sonhos', icon: Sparkles },
+  { href: '/alerts',          label: 'Alertas',         icon: Bell, badge: 'alerts' },
+  { href: '/reports',         label: 'Relatórios',      icon: BarChart2 },
 ]
+
+const PJ_NAV: NavItem[] = [
+  { href: '/dashboard',     label: 'Dashboard',       icon: LayoutDashboard },
+  { href: '/fluxo-de-caixa', label: 'Fluxo de Caixa', icon: BarChart3 },
+  { href: '/dre',           label: 'DRE',             icon: FileBarChart },
+  { href: '/transactions',  label: 'Transações',      icon: ArrowLeftRight },
+  { href: '/accounts',      label: 'Contas',          icon: Wallet },
+  { href: '/categories',    label: 'Categorias',      icon: Tag },
+  { href: '/budgets',       label: 'Orçamentos',      icon: PieChart },
+  { href: '/alerts',        label: 'Alertas',         icon: Bell, badge: 'alerts' },
+  { href: '/consolidado',   label: 'Consolidado',     icon: Layers },
+]
+
+// ─── Active-state colours per context ─────────────────────────────────────────
+
+const THEME = {
+  pf: {
+    navActive:   'bg-emerald-50 text-emerald-700',
+    iconActive:  'text-emerald-600',
+    linkDefault: 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+    iconDefault: 'text-gray-400',
+  },
+  pj: {
+    navActive:   'bg-blue-50 text-blue-700',
+    iconActive:  'text-blue-600',
+    linkDefault: 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
+    iconDefault: 'text-gray-400',
+  },
+}
+
+function isActive(pathname: string, href: string): boolean {
+  if (href === '/transactions') return pathname === '/transactions'
+  return pathname === href || pathname.startsWith(href + '/')
+}
+
+// ─── Sidebar ──────────────────────────────────────────────────────────────────
 
 interface SidebarProps {
   alertCount?: number
@@ -43,11 +91,15 @@ interface SidebarProps {
 
 export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClose }: SidebarProps) {
   const pathname = usePathname()
+  const { activeEntity, isLoading } = useEntityContext()
+
+  const isBusinessEntity = !isLoading && activeEntity?.type === 'business'
+  const navItems = isLoading ? [] : (isBusinessEntity ? PJ_NAV : PF_NAV)
+  const theme = isBusinessEntity ? THEME.pj : THEME.pf
 
   return (
     <aside
       className={cn(
-        // Base: full-height, fixed on mobile, static on desktop
         'w-64 bg-white border-r border-gray-100 flex flex-col h-screen shrink-0',
         'fixed inset-y-0 left-0 z-30 transition-transform duration-300',
         'md:static md:translate-x-0',
@@ -62,7 +114,6 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           </div>
           <span className="text-lg font-bold text-gray-900">FinApp</span>
         </Link>
-        {/* Close button — mobile only */}
         <button
           onClick={onClose}
           className="md:hidden p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
@@ -71,29 +122,30 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
         </button>
       </div>
 
+      {/* Entity switcher */}
+      <div className="pt-3">
+        <EntitySwitcher />
+      </div>
+
       {/* Main nav */}
-      <nav className="flex-1 px-3 py-4 space-y-0.5 overflow-y-auto">
-        {navItems.map(({ href, label, icon: Icon }) => {
-          const isActive = pathname === href || (href !== '/transactions' && pathname.startsWith(href + '/'))
-            || (href === '/transactions' && pathname === '/transactions')
-          const isAlerts = href === '/alerts'
+      <nav className="flex-1 px-3 py-2 space-y-0.5 overflow-y-auto">
+        {navItems.map(({ href, label, icon: Icon, badge }) => {
+          const active = isActive(pathname, href)
           return (
             <Link
               key={href}
               href={href}
               className={cn(
                 'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
-                isActive
-                  ? 'bg-emerald-50 text-emerald-700'
-                  : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                active ? theme.navActive : theme.linkDefault
               )}
             >
               <Icon
-                className={cn('w-4.5 h-4.5 shrink-0', isActive ? 'text-emerald-600' : 'text-gray-400')}
-                strokeWidth={isActive ? 2.5 : 2}
+                className={cn('w-4.5 h-4.5 shrink-0', active ? theme.iconActive : theme.iconDefault)}
+                strokeWidth={active ? 2.5 : 2}
               />
               <span className="flex-1">{label}</span>
-              {isAlerts && alertCount > 0 && (
+              {badge === 'alerts' && alertCount > 0 && (
                 <span className="min-w-[18px] h-[18px] px-1 flex items-center justify-center bg-amber-500 text-white text-[10px] font-bold rounded-full">
                   {alertCount > 9 ? '9+' : alertCount}
                 </span>

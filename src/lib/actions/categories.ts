@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import type { Category, CategoryType } from '@/types'
 
 export interface CategoryFormData {
@@ -10,6 +11,7 @@ export interface CategoryFormData {
   icon: string
   color: string
   parent_id?: string | null
+  dre_group?: string | null
 }
 
 export async function getCategories(type?: CategoryType) {
@@ -21,10 +23,17 @@ export async function getCategories(type?: CategoryType) {
 
   if (!user) return { data: null, error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  // Include user's own categories (by user_id or entity_id) plus global defaults
+  const orFilter = entityId
+    ? `user_id.eq.${user.id},entity_id.eq.${entityId},is_default.eq.true`
+    : `user_id.eq.${user.id},is_default.eq.true`
+
   let query = supabase
     .from('categories')
     .select('*')
-    .or(`user_id.eq.${user.id},is_default.eq.true`)
+    .or(orFilter)
     .order('name')
 
   if (type) {
@@ -43,15 +52,19 @@ export async function createCategory(formData: CategoryFormData) {
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) return { error: 'Não autenticado' }
+  if (!user) return { error: 'Não autenticado', data: null }
+
+  const entityId = await getActiveEntityId(supabase, user.id)
 
   const { data: created, error } = await supabase.from('categories').insert({
     user_id: user.id,
+    entity_id: entityId,
     name: formData.name,
     type: formData.type,
     icon: formData.icon || null,
     color: formData.color || null,
     parent_id: formData.parent_id ?? null,
+    dre_group: formData.dre_group ?? null,
     is_default: false,
   }).select().single()
 
@@ -76,6 +89,7 @@ export async function updateCategory(id: string, formData: Partial<CategoryFormD
       name: formData.name,
       icon: formData.icon ?? null,
       color: formData.color ?? null,
+      dre_group: formData.dre_group ?? null,
     })
     .eq('id', id)
     .eq('user_id', user.id)
@@ -129,6 +143,8 @@ export async function ensureDefaultCategoriesForImport(): Promise<Category[]> {
 
   if (existing && existing.length > 0) return existing as Category[]
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const defaults = [
     { name: 'Alimentação', icon: '🍽️', color: '#22c55e', type: 'expense' as CategoryType },
     { name: 'Assinaturas', icon: '📱', color: '#06b6d4', type: 'expense' as CategoryType },
@@ -143,7 +159,7 @@ export async function ensureDefaultCategoriesForImport(): Promise<Category[]> {
 
   const { data: created } = await supabase
     .from('categories')
-    .insert(defaults.map(c => ({ ...c, user_id: user.id, is_default: false, parent_id: null })))
+    .insert(defaults.map(c => ({ ...c, user_id: user.id, entity_id: entityId, is_default: false, parent_id: null })))
     .select()
 
   return (created ?? []) as Category[]
@@ -151,6 +167,8 @@ export async function ensureDefaultCategoriesForImport(): Promise<Category[]> {
 
 export async function seedDefaultCategories(userId: string) {
   const supabase = await createClient()
+
+  const entityId = await getActiveEntityId(supabase, userId)
 
   const expenses = [
     { name: 'Alimentação', icon: '🍽️', color: '#ef4444' },
@@ -171,8 +189,8 @@ export async function seedDefaultCategories(userId: string) {
   ]
 
   const rows = [
-    ...expenses.map((c) => ({ ...c, type: 'expense' as CategoryType, user_id: userId, is_default: false, parent_id: null })),
-    ...incomes.map((c) => ({ ...c, type: 'income' as CategoryType, user_id: userId, is_default: false, parent_id: null })),
+    ...expenses.map((c) => ({ ...c, type: 'expense' as CategoryType, user_id: userId, entity_id: entityId, is_default: false, parent_id: null })),
+    ...incomes.map((c) => ({ ...c, type: 'income' as CategoryType, user_id: userId, entity_id: entityId, is_default: false, parent_id: null })),
   ]
 
   await supabase.from('categories').insert(rows)

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import { upsertCalendarEvents, deleteCalendarEvent } from '@/lib/google/calendar'
 import type { BillAlert } from '@/types'
 
@@ -49,11 +50,17 @@ export async function getBillAlerts() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: 'Não autenticado' }
 
-  const { data, error } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('bill_alerts')
     .select('*')
     .eq('user_id', user.id)
     .order('day_of_month')
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data, error } = await query
 
   return {
     data: (data ?? []) as BillAlert[],
@@ -67,8 +74,11 @@ export async function createBillAlert(formData: BillAlertFormData) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { data: inserted, error } = await supabase.from('bill_alerts').insert({
     user_id: user.id,
+    entity_id: entityId,
     name: formData.name,
     amount: formData.amount ?? null,
     day_of_month: formData.day_of_month,
@@ -220,11 +230,17 @@ export async function getUpcomingAlerts(withinDays = 7): Promise<{ data: Upcomin
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: [] }
 
-  const { data: alerts } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('bill_alerts')
     .select('*')
     .eq('user_id', user.id)
     .eq('is_active', true)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data: alerts } = await query
 
   if (!alerts) return { data: [] }
 

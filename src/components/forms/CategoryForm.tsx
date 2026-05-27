@@ -16,11 +16,20 @@ const PRESET_COLORS = [
 
 const SUGGESTED_ICONS = ['🍽️', '🚗', '🏠', '💊', '🎮', '📚', '👕', '📦', '💼', '💻', '📈', '💰', '✈️', '🎵', '🐾', '🏋️', '🎁', '🔧', '💡', '🛒']
 
+const DRE_GROUPS = [
+  { value: 'receita_bruta',       label: 'Receita Bruta' },
+  { value: 'deducoes',            label: 'Deduções / Impostos' },
+  { value: 'cmv',                 label: 'CMV / Custos' },
+  { value: 'despesa_operacional', label: 'Despesas Operacionais' },
+  { value: 'depreciacao',         label: 'Depreciação / Amortização' },
+]
+
 const categorySchema = z.object({
   name: z.string().min(1, 'Informe o nome da categoria').max(40, 'Nome muito longo'),
   type: z.enum(['income', 'expense']),
   icon: z.string(),
   color: z.string().min(1, 'Selecione uma cor'),
+  dre_group: z.string().nullish(),
 })
 
 type CategoryFormRaw = z.infer<typeof categorySchema>
@@ -30,6 +39,7 @@ export type CategoryFormValues = CategoryFormRaw
 interface CategoryFormProps {
   defaultValues?: Partial<Category>
   fixedType?: 'income' | 'expense'
+  showDREGroup?: boolean
   onSubmit: (data: CategoryFormValues) => Promise<{ error: string | null }>
   onCancel: () => void
   submitLabel?: string
@@ -38,6 +48,7 @@ interface CategoryFormProps {
 export function CategoryForm({
   defaultValues,
   fixedType,
+  showDREGroup = false,
   onSubmit,
   onCancel,
   submitLabel = 'Salvar',
@@ -58,6 +69,7 @@ export function CategoryForm({
       type: fixedType ?? defaultValues?.type ?? 'expense',
       icon: defaultValues?.icon ?? '',
       color: defaultValues?.color ?? PRESET_COLORS[0],
+      dre_group: defaultValues?.dre_group ?? null,
     },
   })
 
@@ -169,6 +181,24 @@ export function CategoryForm({
         </div>
         {errors.color && <p className="mt-1.5 text-xs text-red-600">{errors.color.message}</p>}
       </div>
+
+      {showDREGroup && (
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1.5">Grupo no DRE</label>
+          <select
+            {...register('dre_group')}
+            className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-white"
+          >
+            <option value="">— Não mapear no DRE —</option>
+            {DRE_GROUPS.map(({ value, label }) => (
+              <option key={value} value={value}>{label}</option>
+            ))}
+          </select>
+          <p className="mt-1 text-xs text-gray-400">
+            Categorias sem grupo não aparecem no DRE, apenas no fluxo de caixa.
+          </p>
+        </div>
+      )}
 
       <div className="flex gap-3 pt-1">
         <button

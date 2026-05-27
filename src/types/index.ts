@@ -102,24 +102,28 @@ export interface Database {
         Row: {
           id: string
           user_id: string | null
+          entity_id: string | null
           name: string
           type: 'income' | 'expense'
           color: string | null
           icon: string | null
           parent_id: string | null
           is_default: boolean
+          dre_group: string | null
           created_at: string
           updated_at: string
         }
         Insert: {
           id?: string
           user_id?: string | null
+          entity_id?: string | null
           name: string
           type: 'income' | 'expense'
           color?: string | null
           icon?: string | null
           parent_id?: string | null
           is_default?: boolean
+          dre_group?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -130,6 +134,7 @@ export interface Database {
           icon?: string | null
           parent_id?: string | null
           is_default?: boolean
+          dre_group?: string | null
           updated_at?: string
         }
         Relationships: never[]
@@ -379,6 +384,39 @@ export interface Database {
         }
         Relationships: never[]
       }
+      entities: {
+        Row: {
+          id: string
+          owner_id: string
+          name: string
+          type: 'personal' | 'business'
+          cnpj: string | null
+          tax_regime: string | null
+          activity: string | null
+          logo_url: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          owner_id: string
+          name: string
+          type: 'personal' | 'business'
+          cnpj?: string | null
+          tax_regime?: string | null
+          activity?: string | null
+          logo_url?: string | null
+          created_at?: string
+        }
+        Update: {
+          name?: string
+          type?: 'personal' | 'business'
+          cnpj?: string | null
+          tax_regime?: string | null
+          activity?: string | null
+          logo_url?: string | null
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<never, never>
     Functions: Record<never, never>
@@ -407,6 +445,11 @@ export type RecurringRule = Tables['recurring_rules']['Row']
 export type BillAlert = Tables['bill_alerts']['Row']
 export type Budget = Tables['budgets']['Row']
 export type Goal = Tables['goals']['Row']
+export type Entity = Tables['entities']['Row']
+
+// ─── Entity type alias ─────────────────────────────────────────────────────────
+
+export type EntityType = 'personal' | 'business'
 
 // ─── Enum type aliases ─────────────────────────────────────────────────────────
 

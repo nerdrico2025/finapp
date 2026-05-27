@@ -3,6 +3,7 @@
 import { createHash } from 'crypto'
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import type { TransactionType, TransactionStatus } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -80,6 +81,8 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 
   if (!user) return { data: null, count: 0, error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { month, year, type, categoryId, accountId, page = 1, pageSize = 20 } = filters
 
   const now = new Date()
@@ -106,15 +109,10 @@ export async function getTransactions(filters: TransactionFilters = {}) {
     .order('created_at', { ascending: false })
     .range(offset, offset + pageSize - 1)
 
-  if (type && type !== 'all') {
-    query = query.eq('type', type)
-  }
-  if (categoryId) {
-    query = query.eq('category_id', categoryId)
-  }
-  if (accountId) {
-    query = query.eq('account_id', accountId)
-  }
+  if (entityId) query = query.eq('entity_id', entityId)
+  if (type && type !== 'all') query = query.eq('type', type)
+  if (categoryId) query = query.eq('category_id', categoryId)
+  if (accountId) query = query.eq('account_id', accountId)
 
   const { data, count, error } = await query
 
@@ -136,6 +134,8 @@ export async function createTransaction(
 
   if (!user) return { error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const importHash = generateImportHash(
     user.id,
     formData.amount,
@@ -144,7 +144,6 @@ export async function createTransaction(
   )
 
   if (!formData.force) {
-    // Try RPC first, fall back to direct query
     let isDuplicate = false
     let existingId: string | undefined
 
@@ -156,7 +155,6 @@ export async function createTransaction(
     if (!rpcError && rpcResult) {
       isDuplicate = true
     } else {
-      // Fallback: query directly
       const { data: existing } = await supabase
         .from('transactions')
         .select('id')
@@ -175,10 +173,11 @@ export async function createTransaction(
     }
   }
 
-  const { data: inserted, error } = await supabase
+  const { error } = await supabase
     .from('transactions')
     .insert({
       user_id: user.id,
+      entity_id: entityId,
       account_id: formData.account_id,
       category_id: formData.category_id ?? null,
       type: formData.type,
@@ -214,7 +213,6 @@ export async function updateTransaction(
 
   if (!user) return { error: 'Não autenticado' }
 
-  // Get original to revert its balance effect
   const { data: original } = await supabase
     .from('transactions')
     .select('*')
@@ -224,7 +222,6 @@ export async function updateTransaction(
 
   if (!original) return { error: 'Transação não encontrada' }
 
-  // Build update payload
   const newType = formData.type ?? original.type
   const newAmount = formData.amount ?? original.amount
   const newAccountId = formData.account_id ?? original.account_id
@@ -302,6 +299,8 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
 
   if (!user) return { inserted: 0, duplicates: 0, errors: 1, errorDetails: ['Não autenticado'] }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   let inserted = 0
   let duplicates = 0
   let errors = 0
@@ -328,6 +327,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
 
       const { error } = await supabase.from('transactions').insert({
         user_id: user.id,
+        entity_id: entityId,
         account_id: row.account_id,
         category_id: row.category_id ?? null,
         type,
@@ -345,7 +345,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
       }
 
       inserted++
-    } catch (e) {
+    } catch {
       errors++
       errorDetails.push(`${row.date} ${row.description}: erro inesperado`)
     }

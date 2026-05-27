@@ -1,6 +1,7 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,7 +20,7 @@ export interface CategorySpending {
 }
 
 export interface MonthlyPoint {
-  label: string      // "Mai", "Jun", etc.
+  label: string
   month: number
   year: number
   income: number
@@ -48,15 +49,21 @@ export async function getMonthlySummary(month: number, year: number): Promise<Mo
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { income: 0, expenses: 0, balance: 0 }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { from, to } = monthRange(month, year)
 
-  const { data } = await supabase
+  let query = supabase
     .from('transactions')
     .select('type, amount')
     .eq('user_id', user.id)
     .in('type', ['income', 'expense'])
     .gte('date', from)
     .lt('date', to)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
 
   let income = 0
   let expenses = 0
@@ -75,15 +82,21 @@ export async function getExpensesByCategory(month: number, year: number): Promis
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { from, to } = monthRange(month, year)
 
-  const { data } = await supabase
+  let query = supabase
     .from('transactions')
     .select('amount, category:categories(id, name, icon, color)')
     .eq('user_id', user.id)
     .eq('type', 'expense')
     .gte('date', from)
     .lt('date', to)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
 
   if (!data) return []
 
@@ -117,15 +130,21 @@ export async function getIncomeByCategory(month: number, year: number): Promise<
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { from, to } = monthRange(month, year)
 
-  const { data } = await supabase
+  let query = supabase
     .from('transactions')
     .select('amount, category:categories(id, name, icon, color)')
     .eq('user_id', user.id)
     .eq('type', 'income')
     .gte('date', from)
     .lt('date', to)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
 
   if (!data) return []
 
@@ -160,7 +179,8 @@ export async function getMonthlyOverview(): Promise<MonthlyPoint[]> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
-  // Last 6 months including current
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const now = new Date()
   const points: MonthlyPoint[] = []
   for (let i = 5; i >= 0; i--) {
@@ -179,13 +199,17 @@ export async function getMonthlyOverview(): Promise<MonthlyPoint[]> {
   const last = points[points.length - 1]
   const { to } = monthRange(last.month, last.year)
 
-  const { data } = await supabase
+  let query = supabase
     .from('transactions')
     .select('type, amount, date')
     .eq('user_id', user.id)
     .in('type', ['income', 'expense'])
     .gte('date', from)
     .lt('date', to)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
 
   for (const tx of data ?? []) {
     const txMonth = parseInt(tx.date.slice(5, 7))

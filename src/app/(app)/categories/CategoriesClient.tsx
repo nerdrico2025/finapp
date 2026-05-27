@@ -12,6 +12,7 @@ import type { Category } from '@/types'
 interface Props {
   expenses: Category[]
   incomes: Category[]
+  isBusinessEntity?: boolean
 }
 
 type ModalState =
@@ -20,7 +21,7 @@ type ModalState =
   | { type: 'edit'; category: Category }
   | { type: 'delete'; category: Category }
 
-export function CategoriesClient({ expenses: initialExpenses, incomes: initialIncomes }: Props) {
+export function CategoriesClient({ expenses: initialExpenses, incomes: initialIncomes, isBusinessEntity = false }: Props) {
   const [modal, setModal] = useState<ModalState>({ type: 'closed' })
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -96,6 +97,7 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
         >
           <CategoryForm
             fixedType={modal.categoryType}
+            showDREGroup={isBusinessEntity}
             onSubmit={handleCreate}
             onCancel={() => setModal({ type: 'closed' })}
             submitLabel="Criar categoria"
@@ -108,6 +110,7 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
           <CategoryForm
             defaultValues={modal.category}
             fixedType={modal.category.type}
+            showDREGroup={isBusinessEntity}
             onSubmit={handleUpdate}
             onCancel={() => setModal({ type: 'closed' })}
             submitLabel="Salvar alterações"
@@ -247,8 +250,17 @@ function CategoryItem({
 
       <div className="flex-1 min-w-0">
         <p className="text-sm font-medium text-gray-900 truncate">{category.name}</p>
-        {category.is_default && (
-          <p className="text-xs text-gray-400">Padrão</p>
+        {(category.is_default || category.dre_group) && (
+          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+            {category.is_default && (
+              <span className="text-xs text-gray-400">Padrão</span>
+            )}
+            {category.dre_group && (
+              <span className="text-[10px] font-medium bg-blue-50 text-blue-600 rounded px-1.5 py-0.5 leading-none">
+                DRE
+              </span>
+            )}
+          </div>
         )}
       </div>
 

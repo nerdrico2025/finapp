@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import type { RecurrenceFrequency, TransactionType } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,7 +67,9 @@ export async function getRecurringRules() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: 'Não autenticado' }
 
-  const { data, error } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('recurring_rules')
     .select(`
       *,
@@ -75,6 +78,10 @@ export async function getRecurringRules() {
     `)
     .eq('user_id', user.id)
     .order('description')
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data, error } = await query
 
   return {
     data: (data ?? []) as unknown as RuleWithRelations[],
@@ -88,8 +95,11 @@ export async function createRecurringRule(formData: RecurringFormData) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { error } = await supabase.from('recurring_rules').insert({
     user_id: user.id,
+    entity_id: entityId,
     account_id: formData.account_id,
     category_id: formData.category_id ?? null,
     type: formData.type,
@@ -207,8 +217,6 @@ export async function processRecurring(): Promise<{ generated: number }> {
 
   const today = todayStr()
 
-  // Only process rules that should be auto-created; manual rules (auto_create=false)
-  // are reminders only — their next_date must not advance without a transaction being created
   const { data: rules } = await supabase
     .from('recurring_rules')
     .select('*')
@@ -222,7 +230,6 @@ export async function processRecurring(): Promise<{ generated: number }> {
   let generated = 0
 
   for (const rule of rules) {
-    // Skip if past end_date
     if (rule.end_date && rule.next_date > rule.end_date) continue
 
     let nextDate = rule.next_date
@@ -232,7 +239,6 @@ export async function processRecurring(): Promise<{ generated: number }> {
     while (nextDate <= today && iterations < MAX_ITERATIONS) {
       if (rule.end_date && nextDate > rule.end_date) break
 
-      // Idempotency: skip if transaction already exists for this rule+date
       const { count } = await supabase
         .from('transactions')
         .select('id', { count: 'exact', head: true })
@@ -242,6 +248,7 @@ export async function processRecurring(): Promise<{ generated: number }> {
       if (!count || count === 0) {
         const { error: txError } = await supabase.from('transactions').insert({
           user_id: user.id,
+          entity_id: rule.entity_id ?? null,
           account_id: rule.account_id,
           category_id: rule.category_id,
           type: rule.type,

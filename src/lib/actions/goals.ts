@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import type { Goal } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -48,11 +49,17 @@ export async function getGoals() {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { data: null, error: 'Não autenticado' }
 
-  const { data, error } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('goals')
     .select('*')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data, error } = await query
 
   if (error) return { data: null, error: error.message }
 
@@ -68,8 +75,11 @@ export async function createGoal(formData: GoalFormData) {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { error } = await supabase.from('goals').insert({
     user_id: user.id,
+    entity_id: entityId,
     name: formData.name,
     description: formData.description ?? null,
     target_amount: formData.target_amount,

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
+import { getActiveEntityId } from '@/lib/entity'
 import type { AccountType } from '@/types'
 
 export interface AccountFormData {
@@ -21,12 +22,18 @@ export async function getAccounts() {
 
   if (!user) return { data: null, error: 'Não autenticado' }
 
-  const { data, error } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('accounts')
     .select('*')
     .eq('user_id', user.id)
     .eq('is_active', true)
     .order('name')
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data, error } = await query
 
   return { data, error: error?.message ?? null }
 }
@@ -40,11 +47,17 @@ export async function getTotalBalance() {
 
   if (!user) return { total: 0, error: 'Não autenticado' }
 
-  const { data, error } = await supabase
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
     .from('accounts')
     .select('balance, include_in_total')
     .eq('user_id', user.id)
     .eq('is_active', true)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data, error } = await query
 
   if (error || !data) return { total: 0, error: error?.message ?? null }
 
@@ -64,8 +77,11 @@ export async function createAccount(formData: AccountFormData) {
 
   if (!user) return { error: 'Não autenticado' }
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
   const { error } = await supabase.from('accounts').insert({
     user_id: user.id,
+    entity_id: entityId,
     name: formData.name,
     type: formData.type,
     color: formData.color,
