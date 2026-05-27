@@ -61,6 +61,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           name: string
           type: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance: number
@@ -75,6 +76,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           name: string
           type: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance: number
@@ -87,6 +89,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           name?: string
           type?: 'checking' | 'savings' | 'credit_card' | 'investment' | 'wallet' | 'other'
           balance?: number
@@ -128,6 +131,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           name?: string
           type?: 'income' | 'expense'
           color?: string | null
@@ -143,6 +147,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           account_id: string
           category_id: string | null
           type: 'income' | 'expense' | 'transfer'
@@ -163,6 +168,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           account_id: string
           category_id?: string | null
           type: 'income' | 'expense' | 'transfer'
@@ -181,6 +187,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           account_id?: string
           category_id?: string | null
           type?: 'income' | 'expense' | 'transfer'
@@ -202,6 +209,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           account_id: string
           category_id: string | null
           type: 'income' | 'expense' | 'transfer'
@@ -220,6 +228,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           account_id: string
           category_id?: string | null
           type: 'income' | 'expense' | 'transfer'
@@ -236,6 +245,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           account_id?: string
           category_id?: string | null
           type?: 'income' | 'expense' | 'transfer'
@@ -256,6 +266,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           name: string
           amount: number | null
           day_of_month: number
@@ -270,6 +281,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           name: string
           amount?: number | null
           day_of_month: number
@@ -282,6 +294,7 @@ export interface Database {
           google_reminder_event_id?: string | null
         }
         Update: {
+          entity_id?: string | null
           name?: string
           amount?: number | null
           day_of_month?: number
@@ -298,6 +311,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           category_id: string
           name: string
           amount: number
@@ -313,6 +327,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           category_id: string
           name: string
           amount: number
@@ -326,6 +341,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           category_id?: string
           name?: string
           amount?: number
@@ -343,6 +359,7 @@ export interface Database {
         Row: {
           id: string
           user_id: string
+          entity_id: string | null
           account_id: string | null
           name: string
           description: string | null
@@ -358,6 +375,7 @@ export interface Database {
         Insert: {
           id?: string
           user_id: string
+          entity_id?: string | null
           account_id?: string | null
           name: string
           description?: string | null
@@ -371,6 +389,7 @@ export interface Database {
           updated_at?: string
         }
         Update: {
+          entity_id?: string | null
           account_id?: string | null
           name?: string
           description?: string | null

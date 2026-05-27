@@ -10,6 +10,7 @@ import type { RecurrenceFrequency, TransactionType } from '@/types'
 export type RuleWithRelations = {
   id: string
   user_id: string
+  entity_id: string | null
   account_id: string
   category_id: string | null
   type: TransactionType

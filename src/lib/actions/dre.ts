@@ -188,8 +188,8 @@ export async function getDRE(
       .lt('date', prevTo),
   ])
 
-  const currAgg = aggregate((currResult.data ?? []) as TxRow[])
-  const prevAgg = aggregate((prevResult.data ?? []) as TxRow[])
+  const currAgg = aggregate((currResult.data ?? []) as unknown as TxRow[])
+  const prevAgg = aggregate((prevResult.data ?? []) as unknown as TxRow[])
   const groups = mergeGroups(currAgg, prevAgg)
 
   return { periodLabel, prevLabel, ...groups }

@@ -122,7 +122,7 @@ export async function getConsolidado(
 
   let prolabore = 0
 
-  for (const row of (monthResult.data ?? []) as MonthRow[]) {
+  for (const row of (monthResult.data ?? []) as unknown as MonthRow[]) {
     const s = summaryMap.get(row.entity_id)
     if (!s) continue
 
