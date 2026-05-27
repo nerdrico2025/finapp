@@ -16,6 +16,7 @@ import {
   Layers,
   Settings,
   TrendingUp,
+  RefreshCw,
   Users,
   X,
   Sparkles,
@@ -36,6 +37,7 @@ type NavItem = {
 const PF_NAV: NavItem[] = [
   { href: '/dashboard',       label: 'Dashboard',       icon: LayoutDashboard },
   { href: '/transactions',    label: 'Transações',      icon: ArrowLeftRight },
+  { href: '/transactions/recurring', label: 'Recorrências', icon: RefreshCw },
   { href: '/accounts',        label: 'Contas',          icon: Wallet },
   { href: '/categories',      label: 'Categorias',      icon: Tag },
   { href: '/budgets',         label: 'Orçamentos',      icon: PieChart },
@@ -51,6 +53,7 @@ const PJ_NAV: NavItem[] = [
   { href: '/fluxo-de-caixa', label: 'Fluxo de Caixa', icon: BarChart3 },
   { href: '/dre',           label: 'DRE',             icon: FileBarChart },
   { href: '/transactions',  label: 'Transações',      icon: ArrowLeftRight },
+  { href: '/transactions/recurring', label: 'Recorrências', icon: RefreshCw },
   { href: '/accounts',      label: 'Contas',          icon: Wallet },
   { href: '/categories',    label: 'Categorias',      icon: Tag },
   { href: '/budgets',       label: 'Orçamentos',      icon: PieChart },
