@@ -16,15 +16,18 @@ export async function getActiveEntityId(
   const fromCookie = cookieStore.get(ENTITY_COOKIE)?.value
 
   if (fromCookie) {
+    // Validate via entity_members so shared entities are accepted too
     const { data } = await supabase
-      .from('entities')
-      .select('id')
-      .eq('id', fromCookie)
-      .eq('owner_id', userId)
+      .from('entity_members')
+      .select('entity_id')
+      .eq('entity_id', fromCookie)
+      .eq('user_id', userId)
+      .not('accepted_at', 'is', null)
       .maybeSingle()
-    if (data?.id) return data.id
+    if (data?.entity_id) return data.entity_id
   }
 
+  // Fallback: personal entity the user owns
   const { data } = await supabase
     .from('entities')
     .select('id')

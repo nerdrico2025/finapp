@@ -436,6 +436,32 @@ export interface Database {
         }
         Relationships: never[]
       }
+      entity_members: {
+        Row: {
+          id: string
+          entity_id: string
+          user_id: string
+          role: 'owner' | 'admin' | 'member'
+          invited_by: string | null
+          accepted_at: string | null
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          entity_id: string
+          user_id: string
+          role?: 'owner' | 'admin' | 'member'
+          invited_by?: string | null
+          accepted_at?: string | null
+          created_at?: string
+        }
+        Update: {
+          role?: 'owner' | 'admin' | 'member'
+          invited_by?: string | null
+          accepted_at?: string | null
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<never, never>
     Functions: Record<never, never>
@@ -465,10 +491,12 @@ export type BillAlert = Tables['bill_alerts']['Row']
 export type Budget = Tables['budgets']['Row']
 export type Goal = Tables['goals']['Row']
 export type Entity = Tables['entities']['Row']
+export type EntityMember = Tables['entity_members']['Row']
 
-// ─── Entity type alias ─────────────────────────────────────────────────────────
+// ─── Entity type aliases ───────────────────────────────────────────────────────
 
 export type EntityType = 'personal' | 'business'
+export type EntityMemberRole = 'owner' | 'admin' | 'member'
 
 // ─── Enum type aliases ─────────────────────────────────────────────────────────
 
