@@ -23,24 +23,33 @@ export function useEntity() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setIsLoading(false); return }
 
-      // Fetch entity IDs where the user is an accepted member (includes shared entities)
-      const { data: memberData } = await supabase
+      let typed: Entity[] | null = null
+
+      // Primary: single query via entity_members JOIN (supports shared entities)
+      const { data: raw, error: memberError } = await supabase
         .from('entity_members')
-        .select('entity_id')
+        .select('entities!entity_id(*)')
         .eq('user_id', user.id)
         .not('accepted_at', 'is', null)
 
-      if (!memberData?.length) { setIsLoading(false); return }
+      if (!memberError && raw?.length) {
+        typed = (raw as unknown as { entities: Entity }[])
+          .map((r) => r.entities)
+          .filter(Boolean)
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      }
 
-      const { data } = await supabase
-        .from('entities')
-        .select('*')
-        .in('id', memberData.map((m) => m.entity_id))
-        .order('created_at', { ascending: true })
+      // Fallback: direct owner_id query (migration not yet applied)
+      if (!typed?.length) {
+        const { data: fallback } = await supabase
+          .from('entities')
+          .select('*')
+          .eq('owner_id', user.id)
+          .order('created_at', { ascending: true })
+        typed = (fallback as Entity[]) ?? null
+      }
 
-      if (!data || data.length === 0) { setIsLoading(false); return }
-
-      const typed = data as Entity[]
+      if (!typed?.length) { setIsLoading(false); return }
       setEntities(typed)
 
       const storedId = localStorage.getItem(STORAGE_KEY)
