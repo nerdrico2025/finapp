@@ -53,9 +53,7 @@ type ModalState =
   | { type: 'edit'; account: Account }
   | { type: 'delete'; account: Account }
 
-export function AccountsClient({ accounts: initialAccounts, totalBalance: initialTotal }: Props) {
-  const [accounts, setAccounts] = useState(initialAccounts)
-  const [total, setTotal] = useState(initialTotal)
+export function AccountsClient({ accounts, totalBalance: total }: Props) {
   const [modal, setModal] = useState<ModalState>({ type: 'closed' })
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
