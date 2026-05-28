@@ -27,13 +27,13 @@ export async function getActiveEntityId(
     if (data?.entity_id) return data.entity_id
   }
 
-  // Fallback: personal entity the user owns
-  const { data } = await supabase
+  // Fallback: any entity the user owns (personal preferred, then any)
+  const { data: owned } = await supabase
     .from('entities')
-    .select('id')
+    .select('id, type')
     .eq('owner_id', userId)
-    .eq('type', 'personal')
-    .maybeSingle()
+    .order('created_at', { ascending: true })
 
-  return data?.id ?? null
+  const personal = owned?.find((e) => e.type === 'personal') ?? owned?.[0]
+  return personal?.id ?? null
 }

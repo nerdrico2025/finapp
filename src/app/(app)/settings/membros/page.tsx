@@ -26,12 +26,15 @@ export default async function MembrosPage() {
       .maybeSingle(),
     supabase
       .from('entities')
-      .select('id, type, name')
+      .select('id, type, name, owner_id')
       .eq('id', entityId)
       .maybeSingle(),
   ])
 
-  const role = membership?.role as EntityMemberRole | undefined
+  // Fall back to owner role if entity_members migration hasn't been applied yet
+  const rawRole = membership?.role as EntityMemberRole | undefined
+  const role: EntityMemberRole | undefined =
+    rawRole ?? (entityRow?.owner_id === user.id ? 'owner' : undefined)
 
   if (!entityRow || entityRow.type !== 'business' || !role || role === 'member') {
     redirect('/settings/profile')

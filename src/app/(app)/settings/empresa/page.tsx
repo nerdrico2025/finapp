@@ -32,7 +32,10 @@ export default async function EmpresaPage() {
   ])
 
   const entity = entityRow as Entity | null
-  const role = membership?.role as EntityMemberRole | undefined
+  // Fall back to owner role if entity_members migration hasn't been applied yet
+  const rawRole = membership?.role as EntityMemberRole | undefined
+  const role: EntityMemberRole | undefined =
+    rawRole ?? (entity?.owner_id === user.id ? 'owner' : undefined)
 
   if (!entity || entity.type !== 'business' || !role || role === 'member') {
     redirect('/settings/profile')
