@@ -23,10 +23,19 @@ export function useEntity() {
       const { data: { user } } = await supabase.auth.getUser()
       if (!user) { setIsLoading(false); return }
 
+      // Fetch entity IDs where the user is an accepted member (includes shared entities)
+      const { data: memberData } = await supabase
+        .from('entity_members')
+        .select('entity_id')
+        .eq('user_id', user.id)
+        .not('accepted_at', 'is', null)
+
+      if (!memberData?.length) { setIsLoading(false); return }
+
       const { data } = await supabase
         .from('entities')
         .select('*')
-        .eq('owner_id', user.id)
+        .in('id', memberData.map((m) => m.entity_id))
         .order('created_at', { ascending: true })
 
       if (!data || data.length === 0) { setIsLoading(false); return }

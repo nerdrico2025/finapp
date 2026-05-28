@@ -3,7 +3,21 @@
 import { z } from 'zod'
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import type { Entity } from '@/types'
+import type { Entity, EntityMemberRole } from '@/types'
+
+// ─── Member types ─────────────────────────────────────────────────────────────
+
+export interface MemberWithProfile {
+  user_id: string
+  role: EntityMemberRole
+  accepted_at: string | null
+  created_at: string
+  profile: {
+    full_name: string | null
+    email: string
+    avatar_url: string | null
+  } | null
+}
 
 // ─── CNPJ validation ──────────────────────────────────────────────────────────
 
@@ -114,6 +128,169 @@ export async function updateBusinessEntity(
 
   revalidatePath('/', 'layout')
   return { error: null, data: updated as Entity }
+}
+
+// ─── Member helpers ───────────────────────────────────────────────────────────
+
+async function getCallerRole(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  entityId: string,
+  userId: string,
+): Promise<EntityMemberRole | null> {
+  const { data } = await supabase
+    .from('entity_members')
+    .select('role')
+    .eq('entity_id', entityId)
+    .eq('user_id', userId)
+    .not('accepted_at', 'is', null)
+    .maybeSingle()
+  return (data?.role as EntityMemberRole) ?? null
+}
+
+// ─── Member management actions ────────────────────────────────────────────────
+
+export async function getEntityMembers(
+  entityId: string,
+): Promise<{ data: MemberWithProfile[] | null; error: string | null }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { data: null, error: 'Não autenticado' }
+
+  const { data: members, error } = await supabase
+    .from('entity_members')
+    .select('user_id, role, accepted_at, created_at')
+    .eq('entity_id', entityId)
+    .order('created_at', { ascending: true })
+
+  if (error) return { data: null, error: error.message }
+  if (!members?.length) return { data: [], error: null }
+
+  const { data: profiles } = await supabase
+    .from('profiles')
+    .select('id, full_name, email, avatar_url')
+    .in('id', members.map((m) => m.user_id))
+
+  return {
+    data: members.map((m) => ({
+      ...m,
+      role: m.role as EntityMemberRole,
+      profile: profiles?.find((p) => p.id === m.user_id) ?? null,
+    })),
+    error: null,
+  }
+}
+
+export async function inviteMember(
+  entityId: string,
+  email: string,
+  role: 'admin' | 'member',
+): Promise<{ error: string | null; data: { name: string } | null }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado', data: null }
+
+  const callerRole = await getCallerRole(supabase, entityId, user.id)
+  if (!callerRole || !['owner', 'admin'].includes(callerRole)) {
+    return { error: 'Sem permissão para convidar membros', data: null }
+  }
+
+  const { data: target } = await supabase
+    .from('profiles')
+    .select('id, full_name, email')
+    .eq('email', email.toLowerCase().trim())
+    .maybeSingle()
+
+  if (!target) return { error: 'Usuário com este email não tem conta no Finapp', data: null }
+
+  const { data: existing } = await supabase
+    .from('entity_members')
+    .select('id')
+    .eq('entity_id', entityId)
+    .eq('user_id', target.id)
+    .maybeSingle()
+
+  if (existing) return { error: 'Usuário já tem acesso a esta empresa', data: null }
+
+  const { error } = await supabase.from('entity_members').insert({
+    entity_id: entityId,
+    user_id: target.id,
+    role,
+    invited_by: user.id,
+    accepted_at: new Date().toISOString(),
+  })
+
+  if (error) return { error: error.message, data: null }
+
+  revalidatePath('/settings/empresa')
+  return { error: null, data: { name: target.full_name || target.email } }
+}
+
+export async function removeMember(
+  entityId: string,
+  targetUserId: string,
+): Promise<{ error: string | null }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado' }
+
+  const callerRole = await getCallerRole(supabase, entityId, user.id)
+  if (!callerRole || !['owner', 'admin'].includes(callerRole)) {
+    return { error: 'Sem permissão para remover membros' }
+  }
+
+  const { data: target } = await supabase
+    .from('entity_members')
+    .select('role')
+    .eq('entity_id', entityId)
+    .eq('user_id', targetUserId)
+    .maybeSingle()
+
+  if (!target) return { error: 'Membro não encontrado' }
+  if (target.role === 'owner') return { error: 'O proprietário não pode ser removido' }
+  if (callerRole === 'admin' && target.role === 'admin') {
+    return { error: 'Administradores não podem remover outros administradores' }
+  }
+
+  const { error } = await supabase
+    .from('entity_members')
+    .delete()
+    .eq('entity_id', entityId)
+    .eq('user_id', targetUserId)
+
+  if (error) return { error: error.message }
+
+  revalidatePath('/settings/empresa')
+  return { error: null }
+}
+
+export async function updateMemberRole(
+  entityId: string,
+  targetUserId: string,
+  newRole: 'admin' | 'member',
+): Promise<{ error: string | null }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado' }
+
+  const callerRole = await getCallerRole(supabase, entityId, user.id)
+  if (callerRole !== 'owner') {
+    return { error: 'Apenas o proprietário pode alterar funções de membros' }
+  }
+  if (targetUserId === user.id) {
+    return { error: 'O proprietário não pode alterar o próprio acesso' }
+  }
+
+  const { error } = await supabase
+    .from('entity_members')
+    .update({ role: newRole })
+    .eq('entity_id', entityId)
+    .eq('user_id', targetUserId)
+    .neq('role', 'owner')
+
+  if (error) return { error: error.message }
+
+  revalidatePath('/settings/empresa')
+  return { error: null }
 }
 
 async function seedBusinessCategories(entityId: string, userId: string) {
