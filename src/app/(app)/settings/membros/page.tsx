@@ -1,13 +1,14 @@
 import type { Metadata } from 'next'
-export const metadata: Metadata = { title: 'Configurações da Empresa' }
+export const metadata: Metadata = { title: 'Membros da Empresa' }
 
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
-import { EmpresaClient } from './EmpresaClient'
-import type { Entity, EntityMemberRole } from '@/types'
+import { getEntityMembers } from '@/lib/actions/entities'
+import { MembrosClient } from './MembrosClient'
+import type { EntityMemberRole } from '@/types'
 
-export default async function EmpresaPage() {
+export default async function MembrosPage() {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
@@ -15,7 +16,6 @@ export default async function EmpresaPage() {
   const entityId = await getActiveEntityId(supabase, user.id)
   if (!entityId) redirect('/settings/profile')
 
-  // Allow owner AND admin (not plain members)
   const [{ data: membership }, { data: entityRow }] = await Promise.all([
     supabase
       .from('entity_members')
@@ -26,19 +26,26 @@ export default async function EmpresaPage() {
       .maybeSingle(),
     supabase
       .from('entities')
-      .select('*')
+      .select('id, type, name')
       .eq('id', entityId)
       .maybeSingle(),
   ])
 
-  const entity = entityRow as Entity | null
   const role = membership?.role as EntityMemberRole | undefined
 
-  if (!entity || entity.type !== 'business' || !role || role === 'member') {
+  if (!entityRow || entityRow.type !== 'business' || !role || role === 'member') {
     redirect('/settings/profile')
   }
 
-  if (role !== 'owner') redirect('/settings/membros')
+  const { data: members } = await getEntityMembers(entityId)
 
-  return <EmpresaClient entity={entity} />
+  return (
+    <MembrosClient
+      entityId={entityId}
+      entityName={entityRow.name}
+      members={members ?? []}
+      currentUserId={user.id}
+      currentUserRole={role}
+    />
+  )
 }

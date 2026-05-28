@@ -2,7 +2,7 @@
 
 import { createContext, useContext } from 'react'
 import { useEntity } from '@/hooks/useEntity'
-import type { Entity } from '@/types'
+import type { Entity, EntityMemberRole } from '@/types'
 
 interface EntityContextValue {
   entities: Entity[]
@@ -11,13 +11,19 @@ interface EntityContextValue {
   addEntity: (entity: Entity) => void
   updateEntity: (entity: Entity) => void
   isLoading: boolean
+  activeEntityRole: EntityMemberRole | null
 }
 
 const EntityContext = createContext<EntityContextValue | null>(null)
 
 export function EntityProvider({ children }: { children: React.ReactNode }) {
-  const value = useEntity()
-  return <EntityContext.Provider value={value}>{children}</EntityContext.Provider>
+  const { memberRoles, activeEntity, ...rest } = useEntity()
+  const activeEntityRole = activeEntity ? (memberRoles[activeEntity.id] ?? null) : null
+  return (
+    <EntityContext.Provider value={{ ...rest, activeEntity, activeEntityRole }}>
+      {children}
+    </EntityContext.Provider>
+  )
 }
 
 export function useEntityContext(): EntityContextValue {

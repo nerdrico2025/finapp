@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import type { Entity } from '@/types'
+import type { Entity, EntityMemberRole } from '@/types'
 
 const STORAGE_KEY = 'finapp_active_entity'
 const COOKIE_NAME = 'finapp_entity_id'
@@ -14,6 +14,7 @@ function syncCookie(id: string) {
 export function useEntity() {
   const [entities, setEntities] = useState<Entity[]>([])
   const [activeEntity, setActiveEntityState] = useState<Entity | null>(null)
+  const [memberRoles, setMemberRoles] = useState<Record<string, EntityMemberRole>>({})
   const [isLoading, setIsLoading] = useState(true)
 
   useEffect(() => {
@@ -28,15 +29,20 @@ export function useEntity() {
       // Primary: single query via entity_members JOIN (supports shared entities)
       const { data: raw, error: memberError } = await supabase
         .from('entity_members')
-        .select('entities!entity_id(*)')
+        .select('entities!entity_id(*), role')
         .eq('user_id', user.id)
         .not('accepted_at', 'is', null)
 
       if (!memberError && raw?.length) {
-        typed = (raw as unknown as { entities: Entity }[])
+        type Row = { entities: Entity; role: EntityMemberRole }
+        const rows = raw as unknown as Row[]
+        typed = rows
           .map((r) => r.entities)
           .filter(Boolean)
           .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        const roles: Record<string, EntityMemberRole> = {}
+        rows.forEach((r) => { if (r.entities?.id) roles[r.entities.id] = r.role })
+        setMemberRoles(roles)
       }
 
       // Fallback: direct owner_id query (migration not yet applied)
@@ -47,6 +53,11 @@ export function useEntity() {
           .eq('owner_id', user.id)
           .order('created_at', { ascending: true })
         typed = (fallback as Entity[]) ?? null
+        if (typed?.length) {
+          const roles: Record<string, EntityMemberRole> = {}
+          typed.forEach((e) => { roles[e.id] = 'owner' })
+          setMemberRoles(roles)
+        }
       }
 
       if (!typed?.length) { setIsLoading(false); return }
@@ -81,5 +92,5 @@ export function useEntity() {
     setActiveEntityState((prev: Entity | null) => prev?.id === updated.id ? updated : prev)
   }, [])
 
-  return { entities, activeEntity, setActiveEntity, addEntity, updateEntity, isLoading }
+  return { entities, activeEntity, setActiveEntity, addEntity, updateEntity, isLoading, memberRoles }
 }

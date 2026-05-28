@@ -2,7 +2,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { User, Lock, SlidersHorizontal, Building2 } from 'lucide-react'
+import { User, Lock, SlidersHorizontal, Building2, Users } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { useEntityContext } from '@/contexts/EntityContext'
 
@@ -14,12 +14,15 @@ const baseNav = [
 
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
-  const { activeEntity } = useEntityContext()
+  const { activeEntity, activeEntityRole } = useEntityContext()
   const isBusinessEntity = activeEntity?.type === 'business'
+  const canManageMembers = isBusinessEntity && (activeEntityRole === 'owner' || activeEntityRole === 'admin')
 
-  const nav = isBusinessEntity
-    ? [...baseNav, { href: '/settings/empresa', label: 'Empresa', icon: Building2 }]
-    : baseNav
+  const nav = [
+    ...baseNav,
+    ...(isBusinessEntity ? [{ href: '/settings/empresa', label: 'Empresa', icon: Building2 }] : []),
+    ...(canManageMembers  ? [{ href: '/settings/membros', label: 'Membros',  icon: Users    }] : []),
+  ]
 
   return (
     <div className="max-w-4xl">
@@ -33,7 +36,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
         <nav className="w-44 shrink-0 bg-white rounded-2xl border border-gray-100 p-2">
           {nav.map(({ href, label, icon: Icon }) => {
             const isActive = pathname.startsWith(href)
-            const isBusiness = href === '/settings/empresa'
+            const isPjTab = href === '/settings/empresa' || href === '/settings/membros'
             return (
               <Link
                 key={href}
@@ -41,7 +44,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                 className={cn(
                   'flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
                   isActive
-                    ? isBusiness
+                    ? isPjTab
                       ? 'bg-blue-50 text-blue-700'
                       : 'bg-emerald-50 text-emerald-700'
                     : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
@@ -51,7 +54,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
                   className={cn(
                     'w-4 h-4 shrink-0',
                     isActive
-                      ? isBusiness ? 'text-blue-600' : 'text-emerald-600'
+                      ? isPjTab ? 'text-blue-600' : 'text-emerald-600'
                       : 'text-gray-400'
                   )}
                   strokeWidth={isActive ? 2.5 : 2}

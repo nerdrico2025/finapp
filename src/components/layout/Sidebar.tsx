@@ -94,9 +94,10 @@ interface SidebarProps {
 
 export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClose }: SidebarProps) {
   const pathname = usePathname()
-  const { activeEntity, isLoading } = useEntityContext()
+  const { activeEntity, activeEntityRole, isLoading } = useEntityContext()
 
   const isBusinessEntity = !isLoading && activeEntity?.type === 'business'
+  const canManageMembers = isBusinessEntity && (activeEntityRole === 'owner' || activeEntityRole === 'admin')
   const navItems = isLoading ? [] : (isBusinessEntity ? PJ_NAV : PF_NAV)
   const theme = isBusinessEntity ? THEME.pj : THEME.pf
 
@@ -160,6 +161,23 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
 
       {/* Bottom nav */}
       <div className="px-3 pb-4 border-t border-gray-100 pt-3 space-y-0.5 shrink-0">
+        {canManageMembers && (
+          <Link
+            href="/settings/membros"
+            className={cn(
+              'flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors',
+              pathname.startsWith('/settings/membros')
+                ? 'bg-blue-50 text-blue-700'
+                : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+            )}
+          >
+            <Users
+              className={cn('w-4.5 h-4.5 shrink-0', pathname.startsWith('/settings/membros') ? 'text-blue-600' : 'text-gray-400')}
+              strokeWidth={pathname.startsWith('/settings/membros') ? 2.5 : 2}
+            />
+            Membros
+          </Link>
+        )}
         {isAdmin && (
           <Link
             href="/admin"
