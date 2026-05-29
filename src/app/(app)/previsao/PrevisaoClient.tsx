@@ -39,7 +39,8 @@ const MONTHS_LONG = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-  transactions: TransacaoPrevista[]
+  realizadas: TransacaoPrevista[]
+  previstas: TransacaoPrevista[]
   budgets: BudgetPrevisao[]
   chartData: ChartPoint[]
   categories: Category[]
@@ -49,7 +50,7 @@ interface Props {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function PrevisaoClient({ transactions, budgets, chartData, categories, month, year }: Props) {
+export function PrevisaoClient({ realizadas, previstas, budgets, chartData, categories, month, year }: Props) {
   const router = useRouter()
 
   const now = new Date()
@@ -58,17 +59,17 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
 
   // ── State ──────────────────────────────────────────────────────────────────
   const [checkedIds, setCheckedIds] = useState<Set<string>>(
-    () => new Set(transactions.map((t) => t.id))
+    () => new Set(previstas.map((t) => t.id))
   )
   const [hypotheticals, setHypotheticals] = useState<TransacaoHipotetica[]>([])
   const [showHypForm, setShowHypForm] = useState(false)
 
-  // Reset selections when period changes (new transactions prop)
+  // Reset selections when period changes
   useEffect(() => {
-    setCheckedIds(new Set(transactions.map((t) => t.id)))
+    setCheckedIds(new Set(previstas.map((t) => t.id)))
     setHypotheticals([])
     setShowHypForm(false)
-  }, [transactions])
+  }, [previstas])
   const [showCustomPicker, setShowCustomPicker] = useState(false)
   const [customMonth, setCustomMonth] = useState(month)
   const [customYear, setCustomYear] = useState(year)
@@ -90,14 +91,22 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
   }, [todayMonth, todayYear])
 
   // ── Derived state (all reactive, zero server calls) ────────────────────────
-  const allItems = useMemo<ItemPrevisto[]>(
-    () => [...transactions, ...hypotheticals],
-    [transactions, hypotheticals]
+
+  // Items that can be toggled (previstas + hypotheticals)
+  const allSelectableItems = useMemo<ItemPrevisto[]>(
+    () => [...previstas, ...hypotheticals],
+    [previstas, hypotheticals]
   )
 
+  const activeSelectableItems = useMemo(
+    () => allSelectableItems.filter((item) => checkedIds.has(item.id)),
+    [allSelectableItems, checkedIds]
+  )
+
+  // realizadas always count; only checked previstas/hypotheticals count
   const activeItems = useMemo(
-    () => allItems.filter((item) => checkedIds.has(item.id)),
-    [allItems, checkedIds]
+    () => [...realizadas, ...activeSelectableItems],
+    [realizadas, activeSelectableItems]
   )
 
   const totalIncome = useMemo(
@@ -256,7 +265,7 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
         <div>
           <h1 className="text-2xl font-semibold text-gray-900">Previsão Orçamentária</h1>
           <p className="mt-0.5 text-sm text-gray-500">
-            {MONTHS_LONG[month - 1]} {year} · {allItems.length} itens projetados
+            {MONTHS_LONG[month - 1]} {year} · {realizadas.length + previstas.length + hypotheticals.length} itens
           </p>
         </div>
       </div>
@@ -389,7 +398,7 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
             <div>
               <h2 className="text-sm font-semibold text-gray-900">Transações Previstas</h2>
               <p className="text-xs text-gray-400 mt-0.5">
-                {activeItems.length} de {allItems.length} selecionadas
+                {activeSelectableItems.length} de {allSelectableItems.length} selecionadas
               </p>
             </div>
             <button
@@ -470,14 +479,147 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
 
           {/* Transaction list */}
           <div className="max-h-[520px] overflow-y-auto">
-            {allItems.length === 0 ? (
+            {realizadas.length === 0 && allSelectableItems.length === 0 ? (
               <div className="py-10 text-center text-gray-400">
                 <RefreshCw className="w-8 h-8 mx-auto mb-2 opacity-20" />
                 <p className="text-sm">Nenhuma transação projetada.</p>
               </div>
+            ) : realizadas.length > 0 ? (
+              <>
+                {/* ── Já realizadas ── */}
+                <div className="px-5 py-2 bg-gray-50 border-b border-gray-100">
+                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                    Já realizadas
+                  </p>
+                </div>
+                <ul className="divide-y divide-gray-50">
+                  {realizadas.map((item) => (
+                    <li
+                      key={item.id}
+                      className="flex items-center gap-3 px-5 py-3 bg-gray-50/30"
+                    >
+                      <div className="w-4 h-4 shrink-0" />
+
+                      <div
+                        className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0"
+                        style={{ backgroundColor: `${item.category_color}20` }}
+                      >
+                        {item.category_icon}
+                      </div>
+
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-medium text-gray-700 truncate">
+                          {item.description}
+                        </p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <p className="text-xs text-gray-400">{item.category_name}</p>
+                          <span className="text-gray-300">·</span>
+                          <p className="text-xs text-gray-400">{formatDate(item.date)}</p>
+                        </div>
+                      </div>
+
+                      <span className="shrink-0 px-1.5 py-0.5 bg-gray-100 text-gray-400 text-[10px] font-medium rounded-full">
+                        Realizada
+                      </span>
+
+                      <p className={cn(
+                        'text-sm font-semibold shrink-0 tabular-nums',
+                        item.type === 'income' ? 'text-emerald-600' : 'text-red-600'
+                      )}>
+                        {formatCurrency(item.amount)}
+                      </p>
+
+                      <div className="w-[22px] shrink-0" />
+                    </li>
+                  ))}
+                </ul>
+
+                {/* ── Previstas ── */}
+                {allSelectableItems.length > 0 && (
+                  <>
+                    <div className="px-5 py-2 bg-gray-50 border-y border-gray-100">
+                      <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                        Previstas
+                      </p>
+                    </div>
+                    <ul className="divide-y divide-gray-50">
+                      {allSelectableItems.map((item) => {
+                        const checked = checkedIds.has(item.id)
+                        const isHyp = item.source === 'hipotetica'
+                        return (
+                          <li
+                            key={item.id}
+                            className={cn(
+                              'flex items-center gap-3 px-5 py-3 transition-colors hover:bg-gray-50',
+                              !checked && 'opacity-50'
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleItem(item.id)}
+                              className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
+                            />
+
+                            <div
+                              className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0"
+                              style={{ backgroundColor: `${item.category_color}20` }}
+                            >
+                              {item.category_icon}
+                            </div>
+
+                            <div className="flex-1 min-w-0">
+                              <p className={cn(
+                                'text-sm font-medium text-gray-900 truncate',
+                                !checked && 'line-through text-gray-400'
+                              )}>
+                                {item.description}
+                              </p>
+                              <div className="flex items-center gap-2 mt-0.5">
+                                <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
+                                  {item.category_name}
+                                </p>
+                                {'date' in item && (
+                                  <>
+                                    <span className="text-gray-300">·</span>
+                                    <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
+                                      {formatDate(item.date)}
+                                    </p>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+
+                            <SourceBadge source={item.source} />
+
+                            <p className={cn(
+                              'text-sm font-semibold shrink-0 tabular-nums',
+                              item.type === 'income' ? 'text-emerald-600' : 'text-red-600',
+                              !checked && 'line-through text-gray-400'
+                            )}>
+                              {formatCurrency(item.amount)}
+                            </p>
+
+                            {isHyp ? (
+                              <button
+                                onClick={() => removeHypothetical(item.id)}
+                                className="p-1 text-gray-300 hover:text-red-500 transition-colors shrink-0"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            ) : (
+                              <div className="w-[22px] shrink-0" />
+                            )}
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </>
+                )}
+              </>
             ) : (
               <ul className="divide-y divide-gray-50">
-                {allItems.map((item) => {
+                {allSelectableItems.map((item) => {
                   const checked = checkedIds.has(item.id)
                   const isHyp = item.source === 'hipotetica'
                   return (
@@ -534,13 +676,15 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
                         {formatCurrency(item.amount)}
                       </p>
 
-                      {isHyp && (
+                      {isHyp ? (
                         <button
                           onClick={() => removeHypothetical(item.id)}
                           className="p-1 text-gray-300 hover:text-red-500 transition-colors shrink-0"
                         >
                           <X className="w-3.5 h-3.5" />
                         </button>
+                      ) : (
+                        <div className="w-[22px] shrink-0" />
                       )}
                     </li>
                   )
@@ -596,6 +740,13 @@ function SummaryCard({
 }
 
 function SourceBadge({ source }: { source: string }) {
+  if (source === 'realizada') {
+    return (
+      <span className="shrink-0 px-1.5 py-0.5 bg-emerald-50 text-emerald-700 text-[10px] font-medium rounded-full">
+        Realizada
+      </span>
+    )
+  }
   if (source === 'recorrente') {
     return (
       <span className="shrink-0 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-medium rounded-full">

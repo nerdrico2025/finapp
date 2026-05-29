@@ -22,7 +22,8 @@ export default async function PrevisaoPage({ searchParams }: Props) {
 
   return (
     <PrevisaoClient
-      transactions={previsao.transactions}
+      realizadas={previsao.realizadas}
+      previstas={previsao.previstas}
       budgets={previsao.budgets}
       chartData={previsao.chartData}
       categories={categories ?? []}

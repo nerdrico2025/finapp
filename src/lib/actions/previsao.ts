@@ -15,7 +15,7 @@ export interface TransacaoPrevista {
   category_name: string
   category_color: string
   category_icon: string
-  source: 'lancada' | 'recorrente'
+  source: 'realizada' | 'lancada' | 'recorrente'
   recurring_rule_id?: string
 }
 
@@ -36,7 +36,8 @@ export interface ChartPoint {
 }
 
 export interface PrevisaoData {
-  transactions: TransacaoPrevista[]
+  realizadas: TransacaoPrevista[]
+  previstas: TransacaoPrevista[]
   budgets: BudgetPrevisao[]
   chartData: ChartPoint[]
 }
@@ -135,7 +136,7 @@ function projectRulesForPeriod(
 export async function getPrevisaoData(month: number, year: number): Promise<PrevisaoData> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-  if (!user) return { transactions: [], budgets: [], chartData: [] }
+  if (!user) return { realizadas: [], previstas: [], budgets: [], chartData: [] }
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
@@ -162,7 +163,6 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
     .lte('date', periodEnd)
     .neq('type', 'transfer')
   if (entityId) txQ = txQ.eq('entity_id', entityId)
-  if (isCurrentMonth) txQ = txQ.eq('status', 'pending')
 
   let budgetQ = supabase
     .from('budgets')
@@ -194,12 +194,16 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
   const typedRules = (rules ?? []) as unknown as RuleRow[]
 
   // ── Build transactions list ────────────────────────────────────────────────
+  const todayStr = `${todayYear}-${pad(todayMonth)}-${pad(now.getDate())}`
+
   const excludeSet = new Set<string>()
-  const realTxs: TransacaoPrevista[] = []
+  const realizadasFromTx: TransacaoPrevista[] = []
+  const previstasFromTx: TransacaoPrevista[] = []
 
   for (const tx of rawTxs ?? []) {
     const cat = tx.category as { name?: string | null; color?: string | null; icon?: string | null } | null
-    realTxs.push({
+    const isRealized = isCurrentMonth && tx.date <= todayStr
+    const item: TransacaoPrevista = {
       id: tx.id,
       type: tx.type as 'income' | 'expense',
       description: tx.description ?? '',
@@ -209,14 +213,22 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
       category_name: cat?.name ?? 'Sem categoria',
       category_color: cat?.color ?? '#94a3b8',
       category_icon: cat?.icon ?? '📋',
-      source: 'lancada',
+      source: isRealized ? 'realizada' : 'lancada',
       recurring_rule_id: tx.recurring_rule_id ?? undefined,
-    })
+    }
+    if (isRealized) realizadasFromTx.push(item)
+    else previstasFromTx.push(item)
     if (tx.recurring_rule_id) excludeSet.add(`${tx.recurring_rule_id}_${tx.date}`)
   }
 
-  const projected = projectRulesForPeriod(typedRules, periodStart, periodEnd, excludeSet)
-  const transactions = [...realTxs, ...projected].sort((a, b) => a.date.localeCompare(b.date))
+  // For current month: project only future occurrences (> today)
+  const projectionStart = isCurrentMonth
+    ? (() => { const d = new Date(todayYear, todayMonth - 1, now.getDate() + 1); return d.toISOString().split('T')[0] })()
+    : periodStart
+  const projected = projectRulesForPeriod(typedRules, projectionStart, periodEnd, excludeSet)
+
+  const realizadas = realizadasFromTx.sort((a, b) => a.date.localeCompare(b.date))
+  const previstas = [...previstasFromTx, ...projected].sort((a, b) => a.date.localeCompare(b.date))
 
   // ── Budgets ────────────────────────────────────────────────────────────────
   const budgets: BudgetPrevisao[] = (rawBudgets ?? []).map((b) => {
@@ -271,5 +283,5 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
     expenses: chartByMonth.get(`${y}-${pad(m)}`)?.expenses ?? 0,
   }))
 
-  return { transactions, budgets, chartData }
+  return { realizadas, previstas, budgets, chartData }
 }
