@@ -121,6 +121,17 @@ export function PrevisaoClient({ realizadas, previstas, budgets, chartData, cate
 
   const saldo = totalIncome - totalExpenses
 
+  // Per-type lists and totals for 2-column layout
+  const realizadasIncome  = useMemo(() => realizadas.filter((i) => i.type === 'income'),  [realizadas])
+  const realizadasExpense = useMemo(() => realizadas.filter((i) => i.type === 'expense'), [realizadas])
+  const realizadasIncomeTotal  = useMemo(() => realizadasIncome.reduce((s, i)  => s + i.amount, 0), [realizadasIncome])
+  const realizadasExpenseTotal = useMemo(() => realizadasExpense.reduce((s, i) => s + i.amount, 0), [realizadasExpense])
+
+  const selectableIncome  = useMemo(() => allSelectableItems.filter((i) => i.type === 'income'),  [allSelectableItems])
+  const selectableExpense = useMemo(() => allSelectableItems.filter((i) => i.type === 'expense'), [allSelectableItems])
+  const activeSelectableIncomeTotal  = useMemo(() => activeSelectableItems.filter((i) => i.type === 'income').reduce((s, i)  => s + i.amount, 0), [activeSelectableItems])
+  const activeSelectableExpenseTotal = useMemo(() => activeSelectableItems.filter((i) => i.type === 'expense').reduce((s, i) => s + i.amount, 0), [activeSelectableItems])
+
   // Category breakdown — expense categories only (vs budget)
   const categorySummary = useMemo(() => {
     const byCategory = new Map<string, { name: string; color: string | null; icon: string | null; previsto: number }>()
@@ -484,212 +495,66 @@ export function PrevisaoClient({ realizadas, previstas, budgets, chartData, cate
                 <RefreshCw className="w-8 h-8 mx-auto mb-2 opacity-20" />
                 <p className="text-sm">Nenhuma transação projetada.</p>
               </div>
-            ) : realizadas.length > 0 ? (
-              <>
-                {/* ── Já realizadas ── */}
-                <div className="px-5 py-2 bg-gray-50 border-b border-gray-100">
-                  <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
-                    Já realizadas
-                  </p>
-                </div>
-                <ul className="divide-y divide-gray-50">
-                  {realizadas.map((item) => (
-                    <li
-                      key={item.id}
-                      className="flex items-center gap-3 px-5 py-3 bg-gray-50/30"
-                    >
-                      <div className="w-4 h-4 shrink-0" />
+            ) : (
+              <div className="p-4 space-y-5">
+                {realizadas.length > 0 && (
+                  <div>
+                    <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">
+                      Já realizadas
+                    </p>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <TxColumn
+                        tipo="income"
+                        items={realizadasIncome}
+                        total={realizadasIncomeTotal}
+                        showCheckbox={false}
+                        checkedIds={checkedIds}
+                        toggleItem={toggleItem}
+                        removeHypothetical={removeHypothetical}
+                      />
+                      <TxColumn
+                        tipo="expense"
+                        items={realizadasExpense}
+                        total={realizadasExpenseTotal}
+                        showCheckbox={false}
+                        checkedIds={checkedIds}
+                        toggleItem={toggleItem}
+                        removeHypothetical={removeHypothetical}
+                      />
+                    </div>
+                  </div>
+                )}
 
-                      <div
-                        className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0"
-                        style={{ backgroundColor: `${item.category_color}20` }}
-                      >
-                        {item.category_icon}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium text-gray-700 truncate">
-                          {item.description}
-                        </p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <p className="text-xs text-gray-400">{item.category_name}</p>
-                          <span className="text-gray-300">·</span>
-                          <p className="text-xs text-gray-400">{formatDate(item.date)}</p>
-                        </div>
-                      </div>
-
-                      <span className="shrink-0 px-1.5 py-0.5 bg-gray-100 text-gray-400 text-[10px] font-medium rounded-full">
-                        Realizada
-                      </span>
-
-                      <p className={cn(
-                        'text-sm font-semibold shrink-0 tabular-nums',
-                        item.type === 'income' ? 'text-emerald-600' : 'text-red-600'
-                      )}>
-                        {formatCurrency(item.amount)}
-                      </p>
-
-                      <div className="w-[22px] shrink-0" />
-                    </li>
-                  ))}
-                </ul>
-
-                {/* ── Previstas ── */}
                 {allSelectableItems.length > 0 && (
-                  <>
-                    <div className="px-5 py-2 bg-gray-50 border-y border-gray-100">
-                      <p className="text-xs font-medium text-gray-400 uppercase tracking-wide">
+                  <div>
+                    {realizadas.length > 0 && (
+                      <p className="text-xs font-medium text-gray-400 uppercase tracking-wide mb-3">
                         Previstas
                       </p>
-                    </div>
-                    <ul className="divide-y divide-gray-50">
-                      {allSelectableItems.map((item) => {
-                        const checked = checkedIds.has(item.id)
-                        const isHyp = item.source === 'hipotetica'
-                        return (
-                          <li
-                            key={item.id}
-                            className={cn(
-                              'flex items-center gap-3 px-5 py-3 transition-colors hover:bg-gray-50',
-                              !checked && 'opacity-50'
-                            )}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleItem(item.id)}
-                              className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
-                            />
-
-                            <div
-                              className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0"
-                              style={{ backgroundColor: `${item.category_color}20` }}
-                            >
-                              {item.category_icon}
-                            </div>
-
-                            <div className="flex-1 min-w-0">
-                              <p className={cn(
-                                'text-sm font-medium text-gray-900 truncate',
-                                !checked && 'line-through text-gray-400'
-                              )}>
-                                {item.description}
-                              </p>
-                              <div className="flex items-center gap-2 mt-0.5">
-                                <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
-                                  {item.category_name}
-                                </p>
-                                {'date' in item && (
-                                  <>
-                                    <span className="text-gray-300">·</span>
-                                    <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
-                                      {formatDate(item.date)}
-                                    </p>
-                                  </>
-                                )}
-                              </div>
-                            </div>
-
-                            <SourceBadge source={item.source} />
-
-                            <p className={cn(
-                              'text-sm font-semibold shrink-0 tabular-nums',
-                              item.type === 'income' ? 'text-emerald-600' : 'text-red-600',
-                              !checked && 'line-through text-gray-400'
-                            )}>
-                              {formatCurrency(item.amount)}
-                            </p>
-
-                            {isHyp ? (
-                              <button
-                                onClick={() => removeHypothetical(item.id)}
-                                className="p-1 text-gray-300 hover:text-red-500 transition-colors shrink-0"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            ) : (
-                              <div className="w-[22px] shrink-0" />
-                            )}
-                          </li>
-                        )
-                      })}
-                    </ul>
-                  </>
-                )}
-              </>
-            ) : (
-              <ul className="divide-y divide-gray-50">
-                {allSelectableItems.map((item) => {
-                  const checked = checkedIds.has(item.id)
-                  const isHyp = item.source === 'hipotetica'
-                  return (
-                    <li
-                      key={item.id}
-                      className={cn(
-                        'flex items-center gap-3 px-5 py-3 transition-colors hover:bg-gray-50',
-                        !checked && 'opacity-50'
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleItem(item.id)}
-                        className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
+                    )}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <TxColumn
+                        tipo="income"
+                        items={selectableIncome}
+                        total={activeSelectableIncomeTotal}
+                        showCheckbox={true}
+                        checkedIds={checkedIds}
+                        toggleItem={toggleItem}
+                        removeHypothetical={removeHypothetical}
                       />
-
-                      <div
-                        className="w-8 h-8 rounded-xl flex items-center justify-center text-sm shrink-0"
-                        style={{ backgroundColor: `${item.category_color}20` }}
-                      >
-                        {item.category_icon}
-                      </div>
-
-                      <div className="flex-1 min-w-0">
-                        <p className={cn(
-                          'text-sm font-medium text-gray-900 truncate',
-                          !checked && 'line-through text-gray-400'
-                        )}>
-                          {item.description}
-                        </p>
-                        <div className="flex items-center gap-2 mt-0.5">
-                          <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
-                            {item.category_name}
-                          </p>
-                          {'date' in item && (
-                            <>
-                              <span className="text-gray-300">·</span>
-                              <p className={cn('text-xs text-gray-400', !checked && 'line-through')}>
-                                {formatDate(item.date)}
-                              </p>
-                            </>
-                          )}
-                        </div>
-                      </div>
-
-                      <SourceBadge source={item.source} />
-
-                      <p className={cn(
-                        'text-sm font-semibold shrink-0 tabular-nums',
-                        item.type === 'income' ? 'text-emerald-600' : 'text-red-600',
-                        !checked && 'line-through text-gray-400'
-                      )}>
-                        {formatCurrency(item.amount)}
-                      </p>
-
-                      {isHyp ? (
-                        <button
-                          onClick={() => removeHypothetical(item.id)}
-                          className="p-1 text-gray-300 hover:text-red-500 transition-colors shrink-0"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      ) : (
-                        <div className="w-[22px] shrink-0" />
-                      )}
-                    </li>
-                  )
-                })}
-              </ul>
+                      <TxColumn
+                        tipo="expense"
+                        items={selectableExpense}
+                        total={activeSelectableExpenseTotal}
+                        showCheckbox={true}
+                        checkedIds={checkedIds}
+                        toggleItem={toggleItem}
+                        removeHypothetical={removeHypothetical}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -712,6 +577,116 @@ export function PrevisaoClient({ realizadas, previstas, budgets, chartData, cate
 }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
+
+function TxColumn({
+  tipo,
+  items,
+  total,
+  showCheckbox,
+  checkedIds,
+  toggleItem,
+  removeHypothetical,
+}: {
+  tipo: 'income' | 'expense'
+  items: ItemPrevisto[]
+  total: number
+  showCheckbox: boolean
+  checkedIds: Set<string>
+  toggleItem: (id: string) => void
+  removeHypothetical: (id: string) => void
+}) {
+  const isIncome = tipo === 'income'
+  return (
+    <div className="flex flex-col rounded-xl border border-gray-100 overflow-hidden">
+      <div className={cn(
+        'flex items-center justify-between px-3 py-2',
+        isIncome ? 'bg-emerald-50' : 'bg-red-50'
+      )}>
+        <span className={cn('text-xs font-semibold', isIncome ? 'text-emerald-700' : 'text-red-700')}>
+          {isIncome ? '↑ Receitas' : '↓ Despesas'}
+        </span>
+        <span className={cn('text-xs font-bold tabular-nums', isIncome ? 'text-emerald-700' : 'text-red-700')}>
+          {formatCurrency(total)}
+        </span>
+      </div>
+
+      {items.length === 0 ? (
+        <p className="text-xs text-gray-300 px-3 py-4 text-center">—</p>
+      ) : (
+        <ul className="divide-y divide-gray-50">
+          {items.map((item) => {
+            const checked = showCheckbox ? checkedIds.has(item.id) : true
+            const isHyp = item.source === 'hipotetica'
+            return (
+              <li
+                key={item.id}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-2.5 transition-colors',
+                  showCheckbox ? 'hover:bg-gray-50' : 'bg-gray-50/30',
+                  !checked && 'opacity-50'
+                )}
+              >
+                {showCheckbox ? (
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleItem(item.id)}
+                    className="w-3.5 h-3.5 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500 shrink-0"
+                  />
+                ) : (
+                  <div className="w-3.5 h-3.5 shrink-0" />
+                )}
+
+                <div
+                  className="w-7 h-7 rounded-lg flex items-center justify-center text-xs shrink-0"
+                  style={{ backgroundColor: `${item.category_color}20` }}
+                >
+                  {item.category_icon}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                  <p className={cn(
+                    'text-xs font-medium text-gray-900 truncate',
+                    !checked && 'line-through text-gray-400'
+                  )}>
+                    {item.description}
+                  </p>
+                  <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                    {'date' in item && (
+                      <p className={cn('text-[10px] text-gray-400', !checked && 'line-through')}>
+                        {formatDate(item.date)}
+                      </p>
+                    )}
+                    <SourceBadge source={item.source} />
+                  </div>
+                </div>
+
+                <p className={cn(
+                  'text-xs font-semibold shrink-0 tabular-nums',
+                  isIncome ? 'text-emerald-600' : 'text-red-600',
+                  !checked && 'line-through text-gray-400'
+                )}>
+                  {formatCurrency(item.amount)}
+                </p>
+
+                {showCheckbox && isHyp ? (
+                  <button
+                    onClick={() => removeHypothetical(item.id)}
+                    className="p-0.5 text-gray-300 hover:text-red-500 transition-colors shrink-0"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                ) : (
+                  <div className="w-[18px] shrink-0" />
+                )}
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </div>
+  )
+}
 
 function SummaryCard({
   label, value, icon, color,
