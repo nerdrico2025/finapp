@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -62,6 +62,13 @@ export function PrevisaoClient({ transactions, budgets, chartData, categories, m
   )
   const [hypotheticals, setHypotheticals] = useState<TransacaoHipotetica[]>([])
   const [showHypForm, setShowHypForm] = useState(false)
+
+  // Reset selections when period changes (new transactions prop)
+  useEffect(() => {
+    setCheckedIds(new Set(transactions.map((t) => t.id)))
+    setHypotheticals([])
+    setShowHypForm(false)
+  }, [transactions])
   const [showCustomPicker, setShowCustomPicker] = useState(false)
   const [customMonth, setCustomMonth] = useState(month)
   const [customYear, setCustomYear] = useState(year)
