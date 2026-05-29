@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Loader2 } from 'lucide-react'
+import { Loader2, Bell } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import type { Account, Category, RecurringRule } from '@/types'
@@ -28,20 +28,31 @@ const recurringSchema = z.object({
   start_date: z.string().min(1, 'Informe a data de início'),
   end_date: z.string().optional(),
   auto_create: z.boolean(),
+  create_alert: z.boolean(),
+  alert_days_before: z.number().int().min(1).max(30),
+  alert_end_date: z.string().optional(),
 })
 
 type RecurringFormRaw = z.infer<typeof recurringSchema>
 
-export interface RecurringFormValues extends Omit<RecurringFormRaw, 'amount' | 'category_id' | 'end_date'> {
+export interface RecurringFormValues extends Omit<RecurringFormRaw, 'amount' | 'category_id' | 'end_date' | 'alert_end_date'> {
   amount: number
   category_id?: string | null
   end_date?: string | null
+  alert_end_date?: string | null
+  remove_alert?: boolean
+}
+
+interface AlertSnapshot {
+  id: string
+  days_before: number
+  end_date: string | null
 }
 
 interface RecurringFormProps {
   accounts: Account[]
   categories: Category[]
-  defaultValues?: Partial<RecurringRule>
+  defaultValues?: Partial<RecurringRule & { bill_alert: AlertSnapshot | null }>
   onSubmit: (data: RecurringFormValues) => Promise<{ error: string | null }>
   onCancel: () => void
   submitLabel?: string
@@ -56,7 +67,9 @@ export function RecurringForm({
   submitLabel = 'Salvar',
 }: RecurringFormProps) {
   const [serverError, setServerError] = useState<string | null>(null)
+  const [removeExistingAlert, setRemoveExistingAlert] = useState(false)
 
+  const hasExistingAlert = !!defaultValues?.bill_alert
   const today = new Date().toISOString().split('T')[0]
 
   const {
@@ -78,20 +91,29 @@ export function RecurringForm({
       start_date: defaultValues?.start_date ?? today,
       end_date: defaultValues?.end_date ?? '',
       auto_create: defaultValues?.auto_create ?? true,
+      create_alert: hasExistingAlert,
+      alert_days_before: defaultValues?.bill_alert?.days_before ?? 3,
+      alert_end_date: defaultValues?.bill_alert?.end_date ?? defaultValues?.end_date ?? '',
     },
   })
 
   const type = watch('type')
+  const createAlert = watch('create_alert')
   const filteredCategories = categories.filter((c) => c.type === type)
+
+  useEffect(() => {
+    if (createAlert) setRemoveExistingAlert(false)
+  }, [createAlert])
 
   async function handleFormSubmit(raw: RecurringFormRaw) {
     setServerError(null)
     const result = await onSubmit({
       ...raw,
-      name: raw.name,
       amount: parseFloat(raw.amount) || 0,
       category_id: raw.category_id || null,
       end_date: raw.end_date || null,
+      alert_end_date: raw.alert_end_date || null,
+      remove_alert: hasExistingAlert && !raw.create_alert ? removeExistingAlert : undefined,
     })
     if (result.error) setServerError(result.error)
   }
@@ -246,6 +268,94 @@ export function RecurringForm({
             A transação será criada no vencimento sem precisar confirmar
           </p>
         </label>
+      </div>
+
+      {/* Alert toggle */}
+      <div className="rounded-lg border border-gray-200 overflow-hidden">
+        <div className="flex items-center gap-3 p-3 bg-gray-50">
+          <input
+            id="create_alert"
+            type="checkbox"
+            {...register('create_alert')}
+            className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+          />
+          <label htmlFor="create_alert" className="flex-1 flex items-center gap-2">
+            <Bell className="w-3.5 h-3.5 text-gray-400" />
+            <div>
+              <p className="text-sm font-medium text-gray-700">Criar alerta de vencimento</p>
+              <p className="text-xs text-gray-400">
+                Receber aviso antes do vencimento desta recorrência
+              </p>
+            </div>
+          </label>
+        </div>
+
+        {createAlert && (
+          <div className="p-3 border-t border-gray-200 space-y-3 bg-white">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                  Avisar com antecedência (dias)
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={30}
+                  {...register('alert_days_before', { valueAsNumber: true })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                />
+                {errors.alert_days_before && (
+                  <p className="mt-1 text-xs text-red-600">{errors.alert_days_before.message}</p>
+                )}
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">
+                  Término do alerta <span className="text-gray-400 font-normal">(opcional)</span>
+                </label>
+                <input
+                  type="date"
+                  {...register('alert_end_date')}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Confirmation when unchecking with existing alert */}
+        {hasExistingAlert && !createAlert && (
+          <div className="p-3 border-t border-amber-200 bg-amber-50">
+            <p className="text-xs text-amber-800 mb-2">
+              Existe um alerta associado a esta recorrência. Deseja removê-lo?
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setRemoveExistingAlert(true)}
+                className={cn(
+                  'flex-1 py-1.5 text-xs font-medium rounded-md border transition-colors',
+                  removeExistingAlert
+                    ? 'bg-red-600 text-white border-red-600'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                )}
+              >
+                Sim, remover
+              </button>
+              <button
+                type="button"
+                onClick={() => setRemoveExistingAlert(false)}
+                className={cn(
+                  'flex-1 py-1.5 text-xs font-medium rounded-md border transition-colors',
+                  !removeExistingAlert
+                    ? 'bg-gray-700 text-white border-gray-700'
+                    : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                )}
+              >
+                Manter alerta
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-3 pt-1">

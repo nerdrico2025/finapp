@@ -23,10 +23,12 @@ export type RuleWithRelations = {
   last_generated_date: string | null
   is_active: boolean
   auto_create: boolean
+  bill_alert_id: string | null
   created_at: string
   updated_at: string
   account: { id: string; name: string; color: string | null } | null
   category: { id: string; name: string; icon: string | null; color: string | null } | null
+  bill_alert: { id: string; days_before: number; end_date: string | null } | null
 }
 
 export interface RecurringFormData {
@@ -39,6 +41,10 @@ export interface RecurringFormData {
   start_date: string
   end_date?: string | null
   auto_create?: boolean
+  create_alert?: boolean
+  alert_days_before?: number
+  alert_end_date?: string | null
+  remove_alert?: boolean
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -75,7 +81,8 @@ export async function getRecurringRules() {
     .select(`
       *,
       account:accounts(id, name, color),
-      category:categories(id, name, icon, color)
+      category:categories(id, name, icon, color),
+      bill_alert:bill_alerts(id, days_before, end_date)
     `)
     .eq('user_id', user.id)
     .order('description')
@@ -98,7 +105,7 @@ export async function createRecurringRule(formData: RecurringFormData) {
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
-  const { error } = await supabase.from('recurring_rules').insert({
+  const { data: rule, error } = await supabase.from('recurring_rules').insert({
     user_id: user.id,
     entity_id: entityId,
     account_id: formData.account_id,
@@ -112,9 +119,29 @@ export async function createRecurringRule(formData: RecurringFormData) {
     next_date: formData.start_date,
     is_active: true,
     auto_create: formData.auto_create ?? true,
-  })
+  }).select('id').single()
 
   if (error) return { error: error.message }
+
+  if (formData.create_alert && rule) {
+    const dayOfMonth = parseInt(formData.start_date.split('-')[2])
+    const { data: alert } = await supabase.from('bill_alerts').insert({
+      user_id: user.id,
+      entity_id: entityId,
+      name: formData.name,
+      amount: formData.amount,
+      day_of_month: dayOfMonth,
+      days_before: formData.alert_days_before ?? 3,
+      end_date: formData.alert_end_date ?? null,
+      is_active: true,
+    }).select('id').single()
+
+    if (alert) {
+      await supabase.from('recurring_rules')
+        .update({ bill_alert_id: alert.id })
+        .eq('id', rule.id)
+    }
+  }
 
   revalidatePath('/transactions/recurring')
   return { error: null }
@@ -126,12 +153,17 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
+  const { data: currentRule } = await supabase
+    .from('recurring_rules')
+    .select('frequency, bill_alert_id, start_date')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .single()
+
   let nextDate: string | undefined
   if (formData.start_date !== undefined) {
     const today = todayStr()
-    const frequency = formData.frequency ?? (
-      await supabase.from('recurring_rules').select('frequency').eq('id', id).eq('user_id', user.id).single()
-    ).data?.frequency as RecurrenceFrequency | undefined
+    const frequency = formData.frequency ?? currentRule?.frequency as RecurrenceFrequency | undefined
 
     if (formData.start_date >= today) {
       nextDate = formData.start_date
@@ -139,6 +171,41 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
       let d = formData.start_date
       while (d < today) d = addPeriod(d, frequency ?? 'monthly')
       nextDate = d
+    }
+  }
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let billAlertUpdate: { bill_alert_id: string | null } | undefined
+
+  if (formData.remove_alert === true && currentRule?.bill_alert_id) {
+    await supabase.from('bill_alerts').delete().eq('id', currentRule.bill_alert_id)
+    billAlertUpdate = { bill_alert_id: null }
+  } else if (formData.create_alert === true) {
+    const startDate = formData.start_date ?? currentRule?.start_date ?? ''
+    const dayOfMonth = parseInt(startDate.split('-')[2] || '1')
+
+    if (currentRule?.bill_alert_id) {
+      await supabase.from('bill_alerts').update({
+        ...(formData.name !== undefined && { name: formData.name }),
+        ...(formData.amount !== undefined && { amount: formData.amount }),
+        day_of_month: dayOfMonth,
+        days_before: formData.alert_days_before ?? 3,
+        end_date: formData.alert_end_date ?? null,
+      }).eq('id', currentRule.bill_alert_id)
+    } else {
+      const { data: alert } = await supabase.from('bill_alerts').insert({
+        user_id: user.id,
+        entity_id: entityId,
+        name: formData.name ?? '',
+        amount: formData.amount ?? null,
+        day_of_month: dayOfMonth,
+        days_before: formData.alert_days_before ?? 3,
+        end_date: formData.alert_end_date ?? null,
+        is_active: true,
+      }).select('id').single()
+
+      if (alert) billAlertUpdate = { bill_alert_id: alert.id }
     }
   }
 
@@ -155,6 +222,7 @@ export async function updateRecurringRule(id: string, formData: Partial<Recurrin
       ...(formData.end_date    !== undefined && { end_date: formData.end_date }),
       ...(formData.auto_create !== undefined && { auto_create: formData.auto_create }),
       ...(nextDate             !== undefined && { next_date: nextDate }),
+      ...billAlertUpdate,
     })
     .eq('id', id)
     .eq('user_id', user.id)

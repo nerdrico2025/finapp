@@ -22,6 +22,7 @@ import type { Account, Category, RecurringRule } from '@/types'
 type RuleWithRelations = RecurringRule & {
   account: { id: string; name: string; color: string | null } | null
   category: { id: string; name: string; icon: string | null; color: string | null } | null
+  bill_alert: { id: string; days_before: number; end_date: string | null } | null
 }
 
 type Modal =

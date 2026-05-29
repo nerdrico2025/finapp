@@ -222,6 +222,7 @@ export interface Database {
           last_generated_date: string | null
           is_active: boolean
           auto_create: boolean
+          bill_alert_id: string | null
           created_at: string
           updated_at: string
         }
@@ -241,6 +242,7 @@ export interface Database {
           last_generated_date?: string | null
           is_active?: boolean
           auto_create?: boolean
+          bill_alert_id?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -258,6 +260,7 @@ export interface Database {
           last_generated_date?: string | null
           is_active?: boolean
           auto_create?: boolean
+          bill_alert_id?: string | null
           updated_at?: string
         }
         Relationships: never[]
