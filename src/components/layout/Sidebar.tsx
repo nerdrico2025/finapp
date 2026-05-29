@@ -20,6 +20,7 @@ import {
   Users,
   X,
   Sparkles,
+  CalendarRange,
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { useEntityContext } from '@/contexts/EntityContext'
@@ -41,6 +42,7 @@ const PF_NAV: NavItem[] = [
   { href: '/accounts',        label: 'Contas',          icon: Wallet },
   { href: '/categories',      label: 'Categorias',      icon: Tag },
   { href: '/budgets',         label: 'Orçamentos',      icon: PieChart },
+  { href: '/previsao',        label: 'Previsão',        icon: CalendarRange },
   { href: '/goals',           label: 'Metas',           icon: Target },
   { href: '/investments',     label: 'Investimentos',   icon: TrendingUp },
   { href: '/lista-de-sonhos', label: 'Lista de Sonhos', icon: Sparkles },
@@ -57,6 +59,7 @@ const PJ_NAV: NavItem[] = [
   { href: '/accounts',      label: 'Contas',          icon: Wallet },
   { href: '/categories',    label: 'Categorias',      icon: Tag },
   { href: '/budgets',       label: 'Orçamentos',      icon: PieChart },
+  { href: '/previsao',      label: 'Previsão',        icon: CalendarRange },
   { href: '/alerts',        label: 'Alertas',         icon: Bell, badge: 'alerts' },
   { href: '/consolidado',   label: 'Consolidado',     icon: Layers },
 ]
