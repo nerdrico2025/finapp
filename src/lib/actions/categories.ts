@@ -25,10 +25,10 @@ export async function getCategories(type?: CategoryType) {
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
-  // Include user's own categories (by user_id or entity_id) plus global defaults
+  // PF: only categories with entity_id IS NULL; PJ: only categories for that entity; plus global defaults
   const orFilter = entityId
-    ? `user_id.eq.${user.id},entity_id.eq.${entityId},is_default.eq.true`
-    : `user_id.eq.${user.id},is_default.eq.true`
+    ? `and(user_id.eq.${user.id},entity_id.eq.${entityId}),is_default.eq.true`
+    : `and(user_id.eq.${user.id},entity_id.is.null),is_default.eq.true`
 
   let query = supabase
     .from('categories')
@@ -135,15 +135,19 @@ export async function ensureDefaultCategoriesForImport(): Promise<Category[]> {
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return []
 
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  const existingFilter = entityId
+    ? `and(user_id.eq.${user.id},entity_id.eq.${entityId}),is_default.eq.true`
+    : `and(user_id.eq.${user.id},entity_id.is.null),is_default.eq.true`
+
   const { data: existing } = await supabase
     .from('categories')
     .select('*')
-    .eq('user_id', user.id)
+    .or(existingFilter)
     .order('name')
 
   if (existing && existing.length > 0) return existing as Category[]
-
-  const entityId = await getActiveEntityId(supabase, user.id)
 
   const defaults = [
     { name: 'Alimentação', icon: '🍽️', color: '#22c55e', type: 'expense' as CategoryType },
