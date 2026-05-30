@@ -159,6 +159,8 @@ export interface Database {
           recurring_rule_id: string | null
           destination_account_id: string | null
           transfer_amount: number | null
+          transfer_pair_id: string | null
+          is_mirror: boolean
           tags: string[] | null
           attachments: string[] | null
           import_hash: string | null
@@ -180,6 +182,8 @@ export interface Database {
           recurring_rule_id?: string | null
           destination_account_id?: string | null
           transfer_amount?: number | null
+          transfer_pair_id?: string | null
+          is_mirror?: boolean
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null
@@ -198,6 +202,8 @@ export interface Database {
           status?: 'pending' | 'completed' | 'cancelled'
           destination_account_id?: string | null
           transfer_amount?: number | null
+          transfer_pair_id?: string | null
+          is_mirror?: boolean
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null

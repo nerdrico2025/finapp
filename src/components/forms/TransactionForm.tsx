@@ -6,7 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, AlertTriangle, X } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
-import { createTransaction, updateTransaction } from '@/lib/actions/transactions'
+import { createTransaction, createTransfer, updateTransaction } from '@/lib/actions/transactions'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import type { Account, Category } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
@@ -107,6 +107,13 @@ export function TransactionForm({
 
     if (isEditing) {
       const result = await updateTransaction(transactionId!, payload)
+      if (result.error) { setServerError(result.error); return }
+      onSuccess()
+      return
+    }
+
+    if (data.type === 'transfer') {
+      const result = await createTransfer(payload)
       if (result.error) { setServerError(result.error); return }
       onSuccess()
       return

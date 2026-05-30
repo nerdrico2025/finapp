@@ -1,6 +1,6 @@
 'use server'
 
-import { createHash } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
@@ -54,11 +54,14 @@ export type TransactionWithRelations = {
   recurring_rule_id: string | null
   destination_account_id: string | null
   transfer_amount: number | null
+  transfer_pair_id: string | null
+  is_mirror: boolean
   tags: string[] | null
   import_hash: string | null
   created_at: string
   updated_at: string
   account: { id: string; name: string; color: string | null } | null
+  destination_account: { id: string; name: string; color: string | null } | null
   category: { id: string; name: string; icon: string | null; color: string | null } | null
 }
 
@@ -99,7 +102,7 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   let query = supabase
     .from('transactions')
     .select(
-      `*, account:accounts(id, name, color), category:categories(id, name, icon, color)`,
+      `*, account:accounts!account_id(id, name, color), destination_account:accounts!destination_account_id(id, name, color), category:categories(id, name, icon, color)`,
       { count: 'exact' }
     )
     .eq('user_id', user.id)
@@ -201,6 +204,71 @@ export async function createTransaction(
   return { error: null }
 }
 
+export async function createTransfer(
+  formData: TransactionFormData
+): Promise<{ error: string | null }> {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) return { error: 'Não autenticado' }
+  if (!formData.destination_account_id) return { error: 'Conta de destino obrigatória' }
+  if (formData.account_id === formData.destination_account_id) {
+    return { error: 'Conta de origem e destino não podem ser iguais' }
+  }
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+  const pairId = randomUUID()
+  const receivedAmount = formData.transfer_amount ?? formData.amount
+
+  // Primary record — drives balance changes in trigger (is_mirror=false)
+  const { error: e1 } = await supabase.from('transactions').insert({
+    user_id: user.id,
+    entity_id: entityId,
+    account_id: formData.account_id,
+    type: 'transfer',
+    amount: formData.amount,
+    date: formData.date,
+    description: formData.description ?? null,
+    destination_account_id: formData.destination_account_id,
+    transfer_amount: formData.transfer_amount ?? null,
+    transfer_pair_id: pairId,
+    is_mirror: false,
+    status: 'completed',
+  })
+
+  if (e1) return { error: e1.message }
+
+  // Mirror record — display only for the destination account (is_mirror=true, no balance impact)
+  const { error: e2 } = await supabase.from('transactions').insert({
+    user_id: user.id,
+    entity_id: entityId,
+    account_id: formData.destination_account_id,
+    type: 'transfer',
+    amount: receivedAmount,
+    date: formData.date,
+    description: formData.description ?? null,
+    destination_account_id: formData.account_id,
+    transfer_pair_id: pairId,
+    is_mirror: true,
+    status: 'completed',
+  })
+
+  if (e2) {
+    await supabase.from('transactions').delete()
+      .eq('transfer_pair_id', pairId)
+      .eq('user_id', user.id)
+    return { error: e2.message }
+  }
+
+  revalidatePath('/transactions')
+  revalidatePath('/accounts')
+  revalidatePath('/dashboard')
+  return { error: null }
+}
+
 export async function updateTransaction(
   id: string,
   formData: Partial<TransactionFormData>
@@ -264,20 +332,31 @@ export async function deleteTransaction(id: string): Promise<{ error: string | n
 
   const { data: original } = await supabase
     .from('transactions')
-    .select('*')
+    .select('transfer_pair_id')
     .eq('id', id)
     .eq('user_id', user.id)
     .single()
 
   if (!original) return { error: 'Transação não encontrada' }
 
-  const { error } = await supabase
-    .from('transactions')
-    .delete()
-    .eq('id', id)
-    .eq('user_id', user.id)
+  let deleteError
+  if (original.transfer_pair_id) {
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('transfer_pair_id', original.transfer_pair_id)
+      .eq('user_id', user.id)
+    deleteError = error
+  } else {
+    const { error } = await supabase
+      .from('transactions')
+      .delete()
+      .eq('id', id)
+      .eq('user_id', user.id)
+    deleteError = error
+  }
 
-  if (error) return { error: error.message }
+  if (deleteError) return { error: deleteError.message }
 
   revalidatePath('/transactions')
   revalidatePath('/accounts')

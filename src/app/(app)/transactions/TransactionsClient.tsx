@@ -84,12 +84,15 @@ export function TransactionsClient({
     router.push(`${pathname}?${params.toString()}`)
   }
 
-  async function handleDelete(id: string) {
-    if (!confirm('Excluir esta transação? O saldo da conta será revertido.')) return
-    setDeletingId(id)
-    await deleteTransaction(id)
+  async function handleDelete(tx: TransactionWithRelations) {
+    const msg = tx.transfer_pair_id
+      ? 'Excluir esta transferência? Ambos os registros (origem e destino) serão removidos e os saldos revertidos.'
+      : 'Excluir esta transação? O saldo da conta será revertido.'
+    if (!confirm(msg)) return
+    setDeletingId(tx.id)
+    await deleteTransaction(tx.id)
     setDeletingId(null)
-    toast.success('Transação excluída!')
+    toast.success(tx.transfer_pair_id ? 'Transferência excluída!' : 'Transação excluída!')
     router.refresh()
   }
 
@@ -269,7 +272,7 @@ export function TransactionsClient({
                   key={tx.id}
                   tx={tx}
                   deleting={deletingId === tx.id}
-                  onDelete={() => handleDelete(tx.id)}
+                  onDelete={() => handleDelete(tx)}
                   onEdit={() => openEdit(tx)}
                 />
               ))}
@@ -359,6 +362,9 @@ function TransactionRow({
 }) {
   const isIncome = tx.type === 'income'
   const isTransfer = tx.type === 'transfer'
+  // Mirror = incoming transfer (credit side); Primary = outgoing (debit side)
+  const isTransferIn = isTransfer && tx.is_mirror
+  const otherAccount = isTransfer ? tx.destination_account : null
 
   return (
     <li className="flex items-center gap-3 px-5 py-3.5 group hover:bg-gray-50 transition-colors">
@@ -384,19 +390,29 @@ function TransactionRow({
           {tx.description ?? (isTransfer ? 'Transferência' : tx.type === 'income' ? 'Receita' : 'Despesa')}
         </p>
         <div className="flex items-center gap-2 mt-0.5">
-          {tx.category && (
-            <span
-              className="text-xs px-1.5 py-0.5 rounded-full font-medium"
-              style={{
-                backgroundColor: tx.category.color ? `${tx.category.color}18` : '#f3f4f6',
-                color: tx.category.color ?? '#6b7280',
-              }}
-            >
-              {tx.category.icon} {tx.category.name}
+          {isTransfer ? (
+            <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-blue-50 text-blue-600">
+              {isTransferIn
+                ? `← ${otherAccount?.name ?? tx.account?.name ?? 'Transferência'}`
+                : `→ ${otherAccount?.name ?? 'Transferência'}`}
             </span>
-          )}
-          {tx.account && (
-            <span className="text-xs text-gray-400">{tx.account.name}</span>
+          ) : (
+            <>
+              {tx.category && (
+                <span
+                  className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+                  style={{
+                    backgroundColor: tx.category.color ? `${tx.category.color}18` : '#f3f4f6',
+                    color: tx.category.color ?? '#6b7280',
+                  }}
+                >
+                  {tx.category.icon} {tx.category.name}
+                </span>
+              )}
+              {tx.account && (
+                <span className="text-xs text-gray-400">{tx.account.name}</span>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -404,9 +420,9 @@ function TransactionRow({
       {/* Amount */}
       <p className={cn(
         'text-sm font-semibold shrink-0 tabular-nums',
-        isIncome ? 'text-emerald-600' : isTransfer ? 'text-blue-600' : 'text-red-600'
+        isIncome || isTransferIn ? 'text-emerald-600' : isTransfer ? 'text-red-500' : 'text-red-600'
       )}>
-        {isIncome ? '+' : isTransfer ? '' : '-'}{formatCurrency(tx.amount)}
+        {isIncome || isTransferIn ? '+' : '-'}{formatCurrency(tx.amount)}
       </p>
 
       {/* Actions */}
