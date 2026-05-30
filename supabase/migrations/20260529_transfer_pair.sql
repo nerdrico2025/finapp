@@ -16,25 +16,21 @@ SECURITY DEFINER
 AS $$
 BEGIN
   UPDATE public.accounts
-  SET balance = (
-    SELECT
-      COALESCE(a.initial_balance, 0) +
-      COALESCE(SUM(
-        CASE
-          WHEN t.is_mirror THEN 0
-          WHEN t.type = 'income'   AND t.account_id             = p_account_id THEN  t.amount
-          WHEN t.type = 'expense'  AND t.account_id             = p_account_id THEN -t.amount
-          WHEN t.type = 'transfer' AND t.account_id             = p_account_id THEN -t.amount
-          WHEN t.type = 'transfer' AND t.destination_account_id = p_account_id THEN  COALESCE(t.transfer_amount, t.amount)
-          ELSE 0
-        END
-      ), 0)
-    FROM public.accounts a
-    LEFT JOIN public.transactions t
-      ON t.account_id = p_account_id
+  SET balance = COALESCE(initial_balance, 0) + COALESCE((
+    SELECT SUM(
+      CASE
+        WHEN t.is_mirror THEN 0
+        WHEN t.type = 'income'   AND t.account_id             = p_account_id THEN  t.amount
+        WHEN t.type = 'expense'  AND t.account_id             = p_account_id THEN -t.amount
+        WHEN t.type = 'transfer' AND t.account_id             = p_account_id THEN -t.amount
+        WHEN t.type = 'transfer' AND t.destination_account_id = p_account_id THEN  COALESCE(t.transfer_amount, t.amount)
+        ELSE 0
+      END
+    )
+    FROM public.transactions t
+    WHERE t.account_id = p_account_id
       OR t.destination_account_id = p_account_id
-    WHERE a.id = p_account_id
-  )
+  ), 0)
   WHERE id = p_account_id;
 END;
 $$;
@@ -79,21 +75,17 @@ $$;
 
 -- Recalculate all balances to account for the new logic
 UPDATE public.accounts a
-SET balance = (
-  SELECT
-    COALESCE(a2.initial_balance, 0) +
-    COALESCE(SUM(
-      CASE
-        WHEN t.is_mirror THEN 0
-        WHEN t.type = 'income'   AND t.account_id             = a2.id THEN  t.amount
-        WHEN t.type = 'expense'  AND t.account_id             = a2.id THEN -t.amount
-        WHEN t.type = 'transfer' AND t.account_id             = a2.id THEN -t.amount
-        WHEN t.type = 'transfer' AND t.destination_account_id = a2.id THEN  COALESCE(t.transfer_amount, t.amount)
-        ELSE 0
-      END
-    ), 0)
-  FROM public.accounts a2
-  LEFT JOIN public.transactions t
-    ON t.account_id = a2.id OR t.destination_account_id = a2.id
-  WHERE a2.id = a.id
-);
+SET balance = COALESCE(a.initial_balance, 0) + COALESCE((
+  SELECT SUM(
+    CASE
+      WHEN t.is_mirror THEN 0
+      WHEN t.type = 'income'   AND t.account_id             = a.id THEN  t.amount
+      WHEN t.type = 'expense'  AND t.account_id             = a.id THEN -t.amount
+      WHEN t.type = 'transfer' AND t.account_id             = a.id THEN -t.amount
+      WHEN t.type = 'transfer' AND t.destination_account_id = a.id THEN  COALESCE(t.transfer_amount, t.amount)
+      ELSE 0
+    END
+  )
+  FROM public.transactions t
+  WHERE t.account_id = a.id OR t.destination_account_id = a.id
+), 0);
