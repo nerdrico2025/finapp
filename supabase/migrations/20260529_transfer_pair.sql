@@ -1,4 +1,6 @@
--- Add transfer_pair_id and is_mirror columns to support two-record transfer model
+-- Add all transfer-related columns (some may not exist yet in the live DB)
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS destination_account_id uuid REFERENCES accounts(id) ON DELETE SET NULL;
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_amount numeric(15,2);
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS transfer_pair_id uuid;
 ALTER TABLE transactions ADD COLUMN IF NOT EXISTS is_mirror boolean NOT NULL DEFAULT false;
 
