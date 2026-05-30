@@ -1,23 +1,29 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   TrendingUp, Upload, ArrowUpCircle, ArrowDownCircle, ArrowLeftRight,
-  X, Calculator, ChevronDown, ChevronUp,
+  X, Calculator, ChevronDown, ChevronUp, RefreshCw,
 } from 'lucide-react'
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend,
+} from 'recharts'
 import { toast } from 'sonner'
 import { formatCurrency, formatDate, parseCurrency } from '@/lib/utils/format'
 import { ImportCSVForm } from '@/components/forms/ImportCSVForm'
 import { CategoryDonutChart } from '@/components/charts/CategoryDonutChart'
 import { cn } from '@/lib/utils/cn'
+import { updateInvestmentBalance } from '@/lib/actions/investments'
 import type { Account, Category } from '@/types'
-import type { InvestmentData } from '@/lib/actions/investments'
+import type { InvestmentData, HistoryPoint } from '@/lib/actions/investments'
 
 interface Props {
   investmentData: InvestmentData
   allAccounts: Account[]
   categories: Category[]
+  history: { points: HistoryPoint[]; accountIds: string[] }
 }
 
 type Tab = 'portfolio' | 'simulator'
@@ -31,6 +37,8 @@ const PERIODS = [
   { label: '20 anos', years: 20 },
   { label: '30 anos', years: 30 },
 ]
+
+const LINE_COLORS = ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4']
 
 function fmtPct(v: number) {
   return new Intl.NumberFormat('pt-BR', {
@@ -52,24 +60,75 @@ function calcResults(pv: number, pmt: number, r: number) {
   })
 }
 
-export function InvestmentsClient({ investmentData, allAccounts, categories }: Props) {
+export function InvestmentsClient({ investmentData, allAccounts, categories, history }: Props) {
   const router = useRouter()
   const [importOpen, setImportOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>('portfolio')
 
-  const { accounts, transactions, total } = investmentData
+  // Optimistic local state for accounts (updated after balance change)
+  const [localAccounts, setLocalAccounts] = useState<Account[]>(investmentData.accounts)
 
-  const largest = accounts.length > 0
-    ? accounts.reduce((best, a) => (a.balance > best.balance ? a : best), accounts[0])
+  // Per-account popover state: accountId -> open
+  const [openPopover, setOpenPopover] = useState<string | null>(null)
+  // Per-account input value
+  const [inputValues, setInputValues] = useState<Record<string, string>>({})
+
+  const [isPending, startTransition] = useTransition()
+
+  const { transactions } = investmentData
+  const total = localAccounts.reduce((s, a) => s + (a.balance ?? 0), 0)
+
+  const largest = localAccounts.length > 0
+    ? localAccounts.reduce((best, a) => (a.balance > best.balance ? a : best), localAccounts[0])
     : null
 
-  const donutData = accounts.map((a) => ({
+  const donutData = localAccounts.map((a) => ({
     id: a.id,
     name: a.name,
     value: a.balance,
     color: a.color,
     icon: a.icon,
   }))
+
+  function openBalancePopover(account: Account) {
+    const formatted = new Intl.NumberFormat('pt-BR', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(account.balance)
+    setInputValues((prev) => ({ ...prev, [account.id]: formatted }))
+    setOpenPopover(account.id)
+  }
+
+  function handleConfirmBalance(account: Account) {
+    const newBalance = parseCurrency(inputValues[account.id] ?? '0')
+
+    startTransition(async () => {
+      const result = await updateInvestmentBalance(account.id, newBalance)
+
+      if (result.error) {
+        toast.error(result.error)
+        return
+      }
+
+      const diff = result.diff ?? 0
+
+      if (diff === 0) {
+        toast.info('Saldo já está atualizado')
+      } else if (diff > 0) {
+        toast.success(`✓ Rendimento de ${formatCurrency(diff)} registrado`)
+      } else {
+        toast.error(`✓ Perda de ${formatCurrency(Math.abs(diff))} registrada`)
+      }
+
+      // Optimistic update of local account balance
+      setLocalAccounts((prev) =>
+        prev.map((a) => a.id === account.id ? { ...a, balance: newBalance } : a)
+      )
+
+      setOpenPopover(null)
+      router.refresh()
+    })
+  }
 
   return (
     <div className="space-y-6">
@@ -96,7 +155,7 @@ export function InvestmentsClient({ investmentData, allAccounts, categories }: P
         />
         <SummaryCard
           label="Contas de investimento"
-          value={String(accounts.length)}
+          value={String(localAccounts.length)}
           icon={<TrendingUp className="w-4 h-4" />}
           iconBg="bg-blue-50" iconColor="text-blue-600" valueColor="text-gray-900"
         />
@@ -140,7 +199,7 @@ export function InvestmentsClient({ investmentData, allAccounts, categories }: P
       {/* Portfolio Tab */}
       {activeTab === 'portfolio' && (
         <>
-          {accounts.length === 0 ? (
+          {localAccounts.length === 0 ? (
             <div className="bg-white rounded-2xl border border-gray-100 py-16 text-center">
               <TrendingUp className="w-10 h-10 text-gray-200 mx-auto mb-3" />
               <p className="text-sm text-gray-400 mb-1">Nenhuma conta de investimento cadastrada.</p>
@@ -153,41 +212,179 @@ export function InvestmentsClient({ investmentData, allAccounts, categories }: P
                 <CategoryDonutChart data={donutData} emptyText="Nenhuma conta de investimento" />
               </div>
 
+              {/* Account list with balance update */}
               <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
                 <div className="px-5 py-4 border-b border-gray-50">
                   <h2 className="text-sm font-semibold text-gray-900">Contas</h2>
                 </div>
                 <ul className="divide-y divide-gray-50">
-                  {accounts.map((account) => {
+                  {localAccounts.map((account, idx) => {
                     const pct = total > 0 ? (account.balance / total) * 100 : 0
                     const color = account.color ?? '#10b981'
+                    const contributed = account.total_contributed ?? 0
+                    const rentabilidade = account.balance - contributed
+                    const rentPct = contributed > 0 ? (rentabilidade / contributed) * 100 : 0
+                    const isPopoverOpen = openPopover === account.id
+
                     return (
-                      <li key={account.id} className="px-5 py-4 flex items-center gap-4">
-                        <div
-                          className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0"
-                          style={{ backgroundColor: `${color}20` }}
-                        >
-                          {account.icon ?? <TrendingUp className="w-4 h-4" style={{ color }} />}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm font-medium text-gray-900 truncate">{account.name}</p>
-                          <div className="flex items-center gap-2 mt-1">
-                            <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                              <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+                      <li key={account.id}>
+                        <div className="px-5 py-4 flex items-center gap-4">
+                          <div
+                            className="w-9 h-9 rounded-xl flex items-center justify-center text-base shrink-0"
+                            style={{ backgroundColor: `${color}20` }}
+                          >
+                            {account.icon ?? <TrendingUp className="w-4 h-4" style={{ color }} />}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-sm font-medium text-gray-900 truncate">{account.name}</p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                                <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: color }} />
+                              </div>
+                              <span className="text-xs text-gray-400 shrink-0 w-10 text-right tabular-nums">
+                                {pct.toFixed(1)}%
+                              </span>
                             </div>
-                            <span className="text-xs text-gray-400 shrink-0 w-10 text-right tabular-nums">
-                              {pct.toFixed(1)}%
-                            </span>
+                            {contributed > 0 && (
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className={cn(
+                                  'text-xs font-medium tabular-nums',
+                                  rentabilidade >= 0 ? 'text-emerald-600' : 'text-red-500'
+                                )}>
+                                  {rentabilidade >= 0 ? '+' : ''}{formatCurrency(rentabilidade)}
+                                </span>
+                                <span className={cn(
+                                  'text-xs px-1.5 py-0.5 rounded-full font-medium tabular-nums',
+                                  rentabilidade >= 0
+                                    ? 'bg-emerald-50 text-emerald-600'
+                                    : 'bg-red-50 text-red-500'
+                                )}>
+                                  {rentabilidade >= 0 ? '+' : ''}{fmtPct(rentPct)}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <p className="text-sm font-semibold tabular-nums text-gray-900">
+                              {formatCurrency(account.balance)}
+                            </p>
+                            <button
+                              onClick={() => isPopoverOpen ? setOpenPopover(null) : openBalancePopover(account)}
+                              title="Atualizar saldo"
+                              className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                            >
+                              <RefreshCw className={cn('w-3.5 h-3.5', isPending && openPopover === account.id && 'animate-spin')} />
+                            </button>
                           </div>
                         </div>
-                        <p className="text-sm font-semibold tabular-nums text-gray-900 shrink-0">
-                          {formatCurrency(account.balance)}
-                        </p>
+
+                        {/* Inline balance update form */}
+                        {isPopoverOpen && (
+                          <div className="mx-5 mb-4 p-4 bg-gray-50 rounded-xl border border-gray-100">
+                            <p className="text-xs font-medium text-gray-500 mb-2">
+                              Saldo atual em <span className="text-gray-700">{account.name}</span>
+                            </p>
+                            <div className="flex items-center gap-2">
+                              <div className="relative flex-1">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-sm text-gray-400 select-none">R$</span>
+                                <input
+                                  type="text"
+                                  inputMode="decimal"
+                                  autoFocus
+                                  value={inputValues[account.id] ?? ''}
+                                  onChange={(e) => setInputValues((prev) => ({ ...prev, [account.id]: e.target.value }))}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') handleConfirmBalance(account)
+                                    if (e.key === 'Escape') setOpenPopover(null)
+                                  }}
+                                  className="w-full pl-9 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
+                                />
+                              </div>
+                              <button
+                                onClick={() => handleConfirmBalance(account)}
+                                disabled={isPending}
+                                className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-lg transition-colors"
+                              >
+                                Confirmar
+                              </button>
+                              <button
+                                onClick={() => setOpenPopover(null)}
+                                className="px-3 py-2 text-gray-500 hover:text-gray-700 hover:bg-gray-100 text-sm font-medium rounded-lg transition-colors"
+                              >
+                                Cancelar
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </li>
                     )
                   })}
                 </ul>
               </div>
+
+              {/* Histórico de rentabilidade */}
+              {history.points.length > 1 && (
+                <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
+                  <div className="px-5 py-4 border-b border-gray-50">
+                    <h2 className="text-sm font-semibold text-gray-900">Histórico de rentabilidade</h2>
+                    <p className="text-xs text-gray-400 mt-0.5">Saldo acumulado por conta ao longo do tempo</p>
+                  </div>
+                  <div className="p-5">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <LineChart data={history.points} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                        <XAxis
+                          dataKey="label"
+                          tick={{ fontSize: 11, fill: '#9ca3af' }}
+                          axisLine={false}
+                          tickLine={false}
+                        />
+                        <YAxis
+                          tick={{ fontSize: 11, fill: '#9ca3af' }}
+                          axisLine={false}
+                          tickLine={false}
+                          tickFormatter={(v: number) =>
+                            new Intl.NumberFormat('pt-BR', { notation: 'compact', maximumFractionDigits: 1 }).format(v)
+                          }
+                        />
+                        <Tooltip
+                          formatter={(value, name) => {
+                            const account = localAccounts.find((a) => a.id === String(name))
+                            return [formatCurrency(Number(value ?? 0)), account?.name ?? String(name)]
+                          }}
+                          labelFormatter={(label) => label}
+                          contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #f0f0f0' }}
+                        />
+                        {history.accountIds.map((id, i) => {
+                          const account = localAccounts.find((a) => a.id === id)
+                          const lineColor = account?.color ?? LINE_COLORS[i % LINE_COLORS.length]
+                          return (
+                            <Line
+                              key={id}
+                              type="monotone"
+                              dataKey={id}
+                              name={id}
+                              stroke={lineColor}
+                              strokeWidth={2}
+                              dot={false}
+                              activeDot={{ r: 4 }}
+                            />
+                          )
+                        })}
+                        {history.accountIds.length > 1 && (
+                          <Legend
+                            formatter={(value: string) => {
+                              const account = localAccounts.find((a) => a.id === value)
+                              return account?.name ?? value
+                            }}
+                            wrapperStyle={{ fontSize: 12 }}
+                          />
+                        )}
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
 
               <div className="bg-white rounded-2xl border border-gray-100 overflow-hidden">
                 <div className="px-5 py-4 border-b border-gray-50">

@@ -70,6 +70,7 @@ export interface Database {
           icon: string | null
           is_active: boolean
           include_in_total: boolean
+          total_contributed: number
           created_at: string
           updated_at: string
         }
@@ -85,6 +86,7 @@ export interface Database {
           icon?: string | null
           is_active?: boolean
           include_in_total?: boolean
+          total_contributed?: number
           created_at?: string
           updated_at?: string
         }
@@ -97,6 +99,7 @@ export interface Database {
           icon?: string | null
           is_active?: boolean
           include_in_total?: boolean
+          total_contributed?: number
           updated_at?: string
         }
         Relationships: never[]
