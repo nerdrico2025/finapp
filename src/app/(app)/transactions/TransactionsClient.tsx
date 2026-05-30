@@ -42,6 +42,8 @@ interface Props {
   accounts: Account[]
   categories: Category[]
   filters: Filters
+  totalIncome: number
+  totalExpenses: number
 }
 
 type Modal = 'closed' | 'create' | 'import' | 'edit'
@@ -52,6 +54,8 @@ export function TransactionsClient({
   accounts,
   categories,
   filters,
+  totalIncome,
+  totalExpenses,
 }: Props) {
   const router = useRouter()
   const pathname = usePathname()
@@ -96,12 +100,8 @@ export function TransactionsClient({
     router.refresh()
   }
 
-  const incomeTotal = transactions
-    .filter((t) => t.type === 'income')
-    .reduce((s, t) => s + t.amount, 0)
-  const expenseTotal = transactions
-    .filter((t) => t.type === 'expense')
-    .reduce((s, t) => s + t.amount, 0)
+  const incomeTotal = totalIncome
+  const expenseTotal = totalExpenses
 
   const yearsRange = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i)
 

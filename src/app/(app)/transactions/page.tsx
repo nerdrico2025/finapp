@@ -1,7 +1,7 @@
 import type { Metadata } from 'next'
 export const metadata: Metadata = { title: 'Transações' }
 
-import { getTransactions } from '@/lib/actions/transactions'
+import { getTransactions, getTransactionSummary } from '@/lib/actions/transactions'
 import { getAccounts } from '@/lib/actions/accounts'
 import { getCategories } from '@/lib/actions/categories'
 import { TransactionsClient } from './TransactionsClient'
@@ -33,10 +33,12 @@ export default async function TransactionsPage({
     { data: transactions, count },
     { data: accounts },
     { data: categories },
+    summary,
   ] = await Promise.all([
     getTransactions({ month, year, type, categoryId, accountId, page, pageSize: 20 }),
     getAccounts(),
     getCategories(),
+    getTransactionSummary({ month, year, categoryId, accountId }),
   ])
 
   return (
@@ -46,6 +48,8 @@ export default async function TransactionsPage({
       accounts={accounts ?? []}
       categories={categories ?? []}
       filters={{ month, year, type, categoryId, accountId, page }}
+      totalIncome={summary.totalIncome}
+      totalExpenses={summary.totalExpenses}
     />
   )
 }

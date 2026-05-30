@@ -364,6 +364,47 @@ export async function deleteTransaction(id: string): Promise<{ error: string | n
   return { error: null }
 }
 
+export async function getTransactionSummary(filters: Pick<TransactionFilters, 'month' | 'year' | 'categoryId' | 'accountId'>) {
+  const supabase = await createClient()
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) return { totalIncome: 0, totalExpenses: 0, error: 'Não autenticado' }
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  const now = new Date()
+  const filterYear = filters.year ?? now.getFullYear()
+  const filterMonth = filters.month ?? now.getMonth() + 1
+  const from = `${filterYear}-${String(filterMonth).padStart(2, '0')}-01`
+  const nextMonth = filterMonth === 12 ? 1 : filterMonth + 1
+  const nextYear = filterMonth === 12 ? filterYear + 1 : filterYear
+  const to = `${nextYear}-${String(nextMonth).padStart(2, '0')}-01`
+
+  let baseQuery = supabase
+    .from('transactions')
+    .select('type, amount')
+    .eq('user_id', user.id)
+    .eq('is_mirror', false)
+    .gte('date', from)
+    .lt('date', to)
+
+  if (entityId) baseQuery = baseQuery.eq('entity_id', entityId)
+  if (filters.categoryId) baseQuery = baseQuery.eq('category_id', filters.categoryId)
+  if (filters.accountId) baseQuery = baseQuery.eq('account_id', filters.accountId)
+
+  const { data, error } = await baseQuery
+
+  if (error || !data) return { totalIncome: 0, totalExpenses: 0, error: error?.message ?? null }
+
+  const totalIncome = data.filter(t => t.type === 'income').reduce((s, t) => s + t.amount, 0)
+  const totalExpenses = data.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
+
+  return { totalIncome, totalExpenses, error: null }
+}
+
 export async function importTransactions(rows: CSVRow[]): Promise<{
   inserted: number
   duplicates: number
