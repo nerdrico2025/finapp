@@ -210,14 +210,15 @@ export function TradeOperations({ initialTrades }: Props) {
     return map
   }, [summaryTrades])
 
-  const { totalProfit, totalLoss, netResult, winRate } = useMemo(() => {
-    let profit = 0, loss = 0, wins = 0, total = 0
+  const { totalProfit, totalLoss, netResult, winRate, avgRent } = useMemo(() => {
+    let profit = 0, loss = 0, wins = 0, total = 0, rentSum = 0
     for (const t of summaryTrades) {
       const c = calcs.get(t.id)
       if (c?.resultado != null) {
         total++
         if (c.resultado > 0) { profit += c.resultado; wins++ }
         else loss += c.resultado
+        if (c.rentPct != null) rentSum += c.rentPct
       }
     }
     return {
@@ -225,6 +226,7 @@ export function TradeOperations({ initialTrades }: Props) {
       totalLoss: loss,
       netResult: profit + loss,
       winRate: total > 0 ? (wins / total) * 100 : 0,
+      avgRent: total > 0 ? rentSum / total : null,
     }
   }, [summaryTrades, calcs])
 
@@ -419,7 +421,7 @@ export function TradeOperations({ initialTrades }: Props) {
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         <SummaryCard label="Lucro total" value={formatCurrency(totalProfit)} color="text-emerald-600" bg="bg-emerald-50" />
         <SummaryCard label="Prejuízo total" value={totalLoss < 0 ? `-${formatCurrency(Math.abs(totalLoss))}` : formatCurrency(0)} color="text-red-600" bg="bg-red-50" />
         <SummaryCard
@@ -427,6 +429,12 @@ export function TradeOperations({ initialTrades }: Props) {
           value={formatCurrency(netResult)}
           color={netResult >= 0 ? 'text-emerald-600' : 'text-red-600'}
           bg={netResult >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
+        />
+        <SummaryCard
+          label="Rentab. média"
+          value={avgRent != null ? fmtPct(avgRent) : '—'}
+          color={avgRent == null ? 'text-gray-400' : avgRent >= 0 ? 'text-emerald-600' : 'text-red-600'}
+          bg={avgRent == null ? 'bg-gray-50' : avgRent >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
         />
         <SummaryCard
           label="Taxa de acerto"
