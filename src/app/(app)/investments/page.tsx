@@ -2,16 +2,18 @@ import type { Metadata } from 'next'
 export const metadata: Metadata = { title: 'Investimentos' }
 
 import { getInvestmentData, getInvestmentHistory } from '@/lib/actions/investments'
+import { getTrades } from '@/lib/actions/trades'
 import { getAccounts } from '@/lib/actions/accounts'
 import { getCategories } from '@/lib/actions/categories'
 import { InvestmentsClient } from './InvestmentsClient'
 
 export default async function InvestmentsPage() {
-  const [investmentData, { data: allAccounts }, { data: categories }, history] = await Promise.all([
+  const [investmentData, { data: allAccounts }, { data: categories }, history, trades] = await Promise.all([
     getInvestmentData(),
     getAccounts(),
     getCategories(),
     getInvestmentHistory(),
+    getTrades(),
   ])
 
   return (
@@ -20,6 +22,7 @@ export default async function InvestmentsPage() {
       allAccounts={allAccounts ?? []}
       categories={categories ?? []}
       history={history}
+      initialTrades={trades}
     />
   )
 }

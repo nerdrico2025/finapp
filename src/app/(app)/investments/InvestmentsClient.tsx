@@ -16,7 +16,8 @@ import { ImportCSVForm } from '@/components/forms/ImportCSVForm'
 import { CategoryDonutChart } from '@/components/charts/CategoryDonutChart'
 import { cn } from '@/lib/utils/cn'
 import { updateInvestmentBalance } from '@/lib/actions/investments'
-import type { Account, Category } from '@/types'
+import { TradeOperations } from './TradeOperations'
+import type { Account, Category, TradeOperation } from '@/types'
 import type { InvestmentData, HistoryPoint } from '@/lib/actions/investments'
 
 interface Props {
@@ -24,9 +25,10 @@ interface Props {
   allAccounts: Account[]
   categories: Category[]
   history: { points: HistoryPoint[]; accountIds: string[] }
+  initialTrades: TradeOperation[]
 }
 
-type Tab = 'portfolio' | 'simulator'
+type Tab = 'portfolio' | 'simulator' | 'trades'
 
 const PERIODS = [
   { label: '1 ano',   years: 1  },
@@ -60,7 +62,7 @@ function calcResults(pv: number, pmt: number, r: number) {
   })
 }
 
-export function InvestmentsClient({ investmentData, allAccounts, categories, history }: Props) {
+export function InvestmentsClient({ investmentData, allAccounts, categories, history, initialTrades }: Props) {
   const router = useRouter()
   const [importOpen, setImportOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>('portfolio')
@@ -181,6 +183,18 @@ export function InvestmentsClient({ investmentData, allAccounts, categories, his
         >
           <TrendingUp className="w-4 h-4" />
           Portfólio
+        </button>
+        <button
+          onClick={() => setActiveTab('trades')}
+          className={cn(
+            'flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg transition-colors',
+            activeTab === 'trades'
+              ? 'bg-white text-gray-900 shadow-sm'
+              : 'text-gray-500 hover:text-gray-700'
+          )}
+        >
+          <ArrowLeftRight className="w-4 h-4" />
+          Operações
         </button>
         <button
           onClick={() => setActiveTab('simulator')}
@@ -431,6 +445,9 @@ export function InvestmentsClient({ investmentData, allAccounts, categories, his
           )}
         </>
       )}
+
+      {/* Trades Tab */}
+      {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} />}
 
       {/* Simulator Tab */}
       {activeTab === 'simulator' && <InvestmentSimulator />}

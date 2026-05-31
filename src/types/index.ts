@@ -474,6 +474,75 @@ export interface Database {
         }
         Relationships: never[]
       }
+      trade_operations: {
+        Row: {
+          id: string
+          user_id: string
+          entity_id: string | null
+          type: 'swing' | 'options'
+          ticker: string
+          entry_date: string
+          exit_date: string | null
+          entry_price: number
+          exit_price: number | null
+          quantity: number
+          fees: number
+          status: 'open' | 'closed'
+          notes: string | null
+          stop_loss: number | null
+          target_price: number | null
+          option_type: 'call' | 'put' | null
+          underlying_asset: string | null
+          expiry_date: string | null
+          option_status: 'open' | 'exercised' | 'expired' | 'closed' | null
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          user_id: string
+          entity_id?: string | null
+          type: 'swing' | 'options'
+          ticker: string
+          entry_date: string
+          exit_date?: string | null
+          entry_price: number
+          exit_price?: number | null
+          quantity: number
+          fees?: number
+          status?: 'open' | 'closed'
+          notes?: string | null
+          stop_loss?: number | null
+          target_price?: number | null
+          option_type?: 'call' | 'put' | null
+          underlying_asset?: string | null
+          expiry_date?: string | null
+          option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          entity_id?: string | null
+          type?: 'swing' | 'options'
+          ticker?: string
+          entry_date?: string
+          exit_date?: string | null
+          entry_price?: number
+          exit_price?: number | null
+          quantity?: number
+          fees?: number
+          status?: 'open' | 'closed'
+          notes?: string | null
+          stop_loss?: number | null
+          target_price?: number | null
+          option_type?: 'call' | 'put' | null
+          underlying_asset?: string | null
+          expiry_date?: string | null
+          option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
+          updated_at?: string
+        }
+        Relationships: never[]
+      }
     }
     Views: Record<never, never>
     Functions: Record<never, never>
@@ -504,6 +573,7 @@ export type Budget = Tables['budgets']['Row']
 export type Goal = Tables['goals']['Row']
 export type Entity = Tables['entities']['Row']
 export type EntityMember = Tables['entity_members']['Row']
+export type TradeOperation = Tables['trade_operations']['Row']
 
 // ─── Entity type aliases ───────────────────────────────────────────────────────
 
