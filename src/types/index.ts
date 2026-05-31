@@ -491,9 +491,10 @@ export interface Database {
           notes: string | null
           stop_loss: number | null
           target_price: number | null
+          option_series: string | null
           option_type: 'call' | 'put' | null
-          underlying_asset: string | null
-          expiry_date: string | null
+          expiration_date: string | null
+          premium: number | null
           option_status: 'open' | 'exercised' | 'expired' | 'closed' | null
           created_at: string
           updated_at: string
@@ -514,9 +515,10 @@ export interface Database {
           notes?: string | null
           stop_loss?: number | null
           target_price?: number | null
+          option_series?: string | null
           option_type?: 'call' | 'put' | null
-          underlying_asset?: string | null
-          expiry_date?: string | null
+          expiration_date?: string | null
+          premium?: number | null
           option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
           created_at?: string
           updated_at?: string
@@ -535,9 +537,10 @@ export interface Database {
           notes?: string | null
           stop_loss?: number | null
           target_price?: number | null
+          option_series?: string | null
           option_type?: 'call' | 'put' | null
-          underlying_asset?: string | null
-          expiry_date?: string | null
+          expiration_date?: string | null
+          premium?: number | null
           option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
           updated_at?: string
         }

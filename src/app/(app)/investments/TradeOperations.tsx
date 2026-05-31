@@ -54,8 +54,9 @@ function calcTrade(t: TradeOperation): Calculated {
     }
   }
 
-  // options
-  const invested = t.entry_price * t.quantity * 100
+  // options — use premium as the cost basis
+  const prem = t.premium ?? t.entry_price
+  const invested = prem * t.quantity * 100
   if (t.option_status === 'expired') {
     const resultado = -invested - t.fees
     return {
@@ -67,7 +68,7 @@ function calcTrade(t: TradeOperation): Calculated {
     }
   }
   if ((t.option_status === 'exercised' || t.option_status === 'closed') && t.exit_price != null) {
-    const resultado = (t.exit_price - t.entry_price) * t.quantity * 100 - t.fees
+    const resultado = (t.exit_price - prem) * t.quantity * 100 - t.fees
     return {
       invested,
       resultado,
@@ -134,32 +135,34 @@ const OPTION_STATUS_LABELS: Record<OptionStatus, string> = {
 
 // ─── Empty form state ─────────────────────────────────────────────────────────
 
-const emptySwing = () => ({
-  type: 'swing' as const,
-  ticker: '', entry_date: new Date().toISOString().split('T')[0]!,
+const today = new Date().toISOString().split('T')[0]!
+
+const emptySwing = (): FormState => ({
+  type: 'swing',
+  ticker: '', entry_date: today,
   exit_date: '', entry_price: '', exit_price: '', quantity: '',
-  fees: '0', status: 'open' as const, notes: '',
+  fees: '0', status: 'open', notes: '',
   stop_loss: '', target_price: '',
-  // options fields not used
-  option_type: 'call' as const, underlying_asset: '', expiry_date: '', option_status: 'open' as OptionStatus,
+  option_type: 'call', option_series: '', expiration_date: '',
+  premium: '', option_status: 'open',
 })
 
-const emptyOptions = () => ({
-  type: 'options' as const,
-  ticker: '', entry_date: new Date().toISOString().split('T')[0]!,
+const emptyOptions = (): FormState => ({
+  type: 'options',
+  ticker: '', entry_date: today,
   exit_date: '', entry_price: '', exit_price: '', quantity: '',
-  fees: '0', status: 'open' as const, notes: '',
+  fees: '0', status: 'open', notes: '',
   stop_loss: '', target_price: '',
-  option_type: 'call' as const, underlying_asset: '', expiry_date: '',
-  option_status: 'open' as OptionStatus,
+  option_type: 'call', option_series: '', expiration_date: '',
+  premium: '', option_status: 'open',
 })
 
 interface FormState {
   type: TradeTab
-  ticker: string
+  ticker: string          // swing: stock (PETR4). options: underlying asset (PETR4)
   entry_date: string
   exit_date: string
-  entry_price: string
+  entry_price: string     // swing: entry price per share
   exit_price: string
   quantity: string
   fees: string
@@ -168,8 +171,9 @@ interface FormState {
   stop_loss: string
   target_price: string
   option_type: 'call' | 'put'
-  underlying_asset: string
-  expiry_date: string
+  option_series: string   // options: series code (PETRA100)
+  expiration_date: string // options: expiration date
+  premium: string         // options: premium per share
   option_status: OptionStatus
 }
 
@@ -248,8 +252,9 @@ export function TradeOperations({ initialTrades }: Props) {
       stop_loss: t.stop_loss != null ? fmtNum(t.stop_loss, 4) : '',
       target_price: t.target_price != null ? fmtNum(t.target_price, 4) : '',
       option_type: t.option_type ?? 'call',
-      underlying_asset: t.underlying_asset ?? '',
-      expiry_date: t.expiry_date ?? '',
+      option_series: t.option_series ?? '',
+      expiration_date: t.expiration_date ?? '',
+      premium: t.premium != null ? fmtNum(t.premium, 4) : '',
       option_status: (t.option_status as OptionStatus) ?? 'open',
     })
     setFormOpen(true)
@@ -280,13 +285,14 @@ export function TradeOperations({ initialTrades }: Props) {
         toStop: (stp && ep > 0) ? ((stp - ep) / ep) * 100 : null,
       }
     }
-    const invested = ep * qty * 100
+    const prem = form.premium ? parseNum(form.premium) : ep
+    const invested = prem * qty * 100
     if (form.option_status === 'expired') {
       const resultado = -invested - fees
       return { invested, resultado, rentPct: invested > 0 ? (resultado / invested) * 100 : null, toTarget: null, toStop: null }
     }
     if ((form.option_status === 'exercised' || form.option_status === 'closed') && xp != null) {
-      const resultado = (xp - ep) * qty * 100 - fees
+      const resultado = (xp - prem) * qty * 100 - fees
       return { invested, resultado, rentPct: invested > 0 ? (resultado / invested) * 100 : null, toTarget: null, toStop: null }
     }
     return { invested, resultado: null, rentPct: null, toTarget: null, toStop: null }
@@ -295,7 +301,9 @@ export function TradeOperations({ initialTrades }: Props) {
   function handleSubmit() {
     const qty = parseNum(form.quantity)
     const ep = parseNum(form.entry_price)
-    if (!form.ticker || !form.entry_date || ep <= 0 || qty <= 0) {
+    const prem = parseNum(form.premium)
+    const priceOk = formTab === 'swing' ? ep > 0 : prem > 0
+    if (!form.ticker || !form.entry_date || !priceOk || qty <= 0) {
       toast.error('Preencha os campos obrigatórios')
       return
     }
@@ -308,7 +316,7 @@ export function TradeOperations({ initialTrades }: Props) {
       ticker: form.ticker.toUpperCase(),
       entry_date: form.entry_date,
       exit_date: (isClosed && form.exit_date) ? form.exit_date : null,
-      entry_price: ep,
+      entry_price: formTab === 'swing' ? ep : 0,
       exit_price: (isClosed && xp != null) ? xp : null,
       quantity: qty,
       fees: parseNum(form.fees),
@@ -317,8 +325,9 @@ export function TradeOperations({ initialTrades }: Props) {
       stop_loss: form.stop_loss ? parseNum(form.stop_loss) : null,
       target_price: form.target_price ? parseNum(form.target_price) : null,
       option_type: formTab === 'options' ? form.option_type : null,
-      underlying_asset: (formTab === 'options' && form.underlying_asset) ? form.underlying_asset : null,
-      expiry_date: (formTab === 'options' && form.expiry_date) ? form.expiry_date : null,
+      option_series: (formTab === 'options' && form.option_series) ? form.option_series : null,
+      expiration_date: (formTab === 'options' && form.expiration_date) ? form.expiration_date : null,
+      premium: (formTab === 'options' && form.premium) ? parseNum(form.premium) : null,
       option_status: formTab === 'options' ? form.option_status : null,
     }
 
@@ -332,8 +341,24 @@ export function TradeOperations({ initialTrades }: Props) {
         const { error, id } = await createTrade(payload)
         if (error) { toast.error(error); return }
         const newTrade: TradeOperation = {
-          ...payload, id: id!, user_id: '', entity_id: null,
-          fees: payload.fees,
+          id: id!, user_id: '', entity_id: null,
+          type: payload.type,
+          ticker: payload.ticker,
+          entry_date: payload.entry_date,
+          exit_date: payload.exit_date ?? null,
+          entry_price: payload.entry_price,
+          exit_price: payload.exit_price ?? null,
+          quantity: payload.quantity,
+          fees: payload.fees ?? 0,
+          status: payload.status,
+          notes: payload.notes ?? null,
+          stop_loss: payload.stop_loss ?? null,
+          target_price: payload.target_price ?? null,
+          option_series: payload.option_series ?? null,
+          option_type: payload.option_type ?? null,
+          expiration_date: payload.expiration_date ?? null,
+          premium: payload.premium ?? null,
+          option_status: payload.option_status ?? null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         }
@@ -690,8 +715,8 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
             ? <span className="text-xs font-semibold text-red-600">💀 Virou pó</span>
             : <OptionStatusBadge status={t.option_status as OptionStatus} />}
         </td>
-        <td className="px-4 py-2.5 font-semibold text-gray-900">{t.underlying_asset ?? '—'}</td>
-        <td className="px-4 py-2.5 text-gray-700">{t.ticker}</td>
+        <td className="px-4 py-2.5 font-semibold text-gray-900">{t.ticker}</td>
+        <td className="px-4 py-2.5 text-gray-700">{t.option_series ?? '—'}</td>
         <td className="px-4 py-2.5">
           {t.option_type && (
             <span className={cn('text-xs font-semibold px-1.5 py-0.5 rounded', t.option_type === 'call' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
@@ -699,7 +724,7 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
             </span>
           )}
         </td>
-        <td className="px-4 py-2.5 text-gray-600">{t.expiry_date ?? '—'}</td>
+        <td className="px-4 py-2.5 text-gray-600">{t.expiration_date ?? '—'}</td>
         <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.quantity, 0)}</td>
         <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.entry_price, 4)}</td>
         <td className="px-4 py-2.5 text-right tabular-nums">{t.exit_price != null ? fmtNum(t.exit_price, 4) : '—'}</td>
@@ -846,10 +871,10 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
           <>
             <div className="grid grid-cols-2 gap-3">
               <FormRow label="Ativo objeto *">
-                <input type="text" value={form.underlying_asset} placeholder="PETR4" onChange={(e) => setF('underlying_asset', e.target.value.toUpperCase())} className={inputCls} />
+                <input type="text" value={form.ticker} placeholder="PETR4" onChange={(e) => setF('ticker', e.target.value.toUpperCase())} className={inputCls} />
               </FormRow>
               <FormRow label="Série da opção *">
-                <input type="text" value={form.ticker} placeholder="PETRA100" onChange={(e) => setF('ticker', e.target.value.toUpperCase())} className={inputCls} />
+                <input type="text" value={form.option_series} placeholder="PETRA100" onChange={(e) => setF('option_series', e.target.value.toUpperCase())} className={inputCls} />
               </FormRow>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -861,7 +886,7 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
                 />
               </FormRow>
               <FormRow label="Vencimento">
-                <input type="date" value={form.expiry_date} onChange={(e) => setF('expiry_date', e.target.value)} className={inputCls} />
+                <input type="date" value={form.expiration_date} onChange={(e) => setF('expiration_date', e.target.value)} className={inputCls} />
               </FormRow>
             </div>
             <FormRow label="Data entrada *">
@@ -872,7 +897,7 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
                 <input type="text" inputMode="decimal" value={form.quantity} onChange={(e) => setF('quantity', e.target.value)} className={inputCls} placeholder="1" />
               </FormRow>
               <FormRow label="Prêmio / ação *">
-                <input type="text" inputMode="decimal" value={form.entry_price} onChange={(e) => setF('entry_price', e.target.value)} className={inputCls} placeholder="0,0000" />
+                <input type="text" inputMode="decimal" value={form.premium} onChange={(e) => setF('premium', e.target.value)} className={inputCls} placeholder="0,0000" />
               </FormRow>
             </div>
             <div className="grid grid-cols-2 gap-3">

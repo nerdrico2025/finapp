@@ -11,22 +11,23 @@ export type OptionStatus = 'open' | 'exercised' | 'expired' | 'closed'
 
 export interface TradeFormData {
   type: TradeType
-  ticker: string
+  ticker: string            // swing: PETR4 (stock). options: PETR4 (underlying asset)
   entry_date: string
   exit_date?: string | null
-  entry_price: number
+  entry_price: number       // swing: price per share. options: not used (use premium)
   exit_price?: number | null
   quantity: number
   fees?: number
   status: TradeStatus
   notes?: string | null
-  // Swing
+  // Swing only
   stop_loss?: number | null
   target_price?: number | null
-  // Options
+  // Options only
+  option_series?: string | null   // e.g. PETRA100
   option_type?: 'call' | 'put' | null
-  underlying_asset?: string | null
-  expiry_date?: string | null
+  expiration_date?: string | null
+  premium?: number | null         // premium per share for options
   option_status?: OptionStatus | null
 }
 
@@ -87,9 +88,10 @@ export async function createTrade(
       notes: formData.notes ?? null,
       stop_loss: formData.stop_loss ?? null,
       target_price: formData.target_price ?? null,
+      option_series: formData.option_series?.toUpperCase() ?? null,
       option_type: formData.option_type ?? null,
-      underlying_asset: formData.underlying_asset?.toUpperCase() ?? null,
-      expiry_date: formData.expiry_date ?? null,
+      expiration_date: formData.expiration_date ?? null,
+      premium: formData.premium ?? null,
       option_status: formData.option_status ?? null,
     })
     .select('id')
@@ -124,9 +126,10 @@ export async function updateTrade(
       ...('notes' in formData && { notes: formData.notes ?? null }),
       ...('stop_loss' in formData && { stop_loss: formData.stop_loss ?? null }),
       ...('target_price' in formData && { target_price: formData.target_price ?? null }),
+      ...('option_series' in formData && { option_series: formData.option_series?.toUpperCase() ?? null }),
       ...('option_type' in formData && { option_type: formData.option_type ?? null }),
-      ...('underlying_asset' in formData && { underlying_asset: formData.underlying_asset?.toUpperCase() ?? null }),
-      ...('expiry_date' in formData && { expiry_date: formData.expiry_date ?? null }),
+      ...('expiration_date' in formData && { expiration_date: formData.expiration_date ?? null }),
+      ...('premium' in formData && { premium: formData.premium ?? null }),
       ...('option_status' in formData && { option_status: formData.option_status ?? null }),
     })
     .eq('id', id)
