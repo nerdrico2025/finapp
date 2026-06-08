@@ -28,7 +28,7 @@ interface CategoryOption {
 
 // ─── Normalização ─────────────────────────────────────────────────────────────
 
-export function normalizeDescription(raw: string): string {
+function normalizeDescription(raw: string): string {
   return raw
     .toLowerCase()
     .normalize('NFD')
