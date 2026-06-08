@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Plus, Pencil, Trash2, X, TrendingUp, TrendingDown } from 'lucide-react'
+import { Plus, Pencil, Trash2, X, TrendingUp, TrendingDown, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
 import { createCategory, updateCategory, deleteCategory } from '@/lib/actions/categories'
 import { CategoryForm, type CategoryFormValues } from '@/components/forms/CategoryForm'
@@ -17,7 +17,7 @@ interface Props {
 
 type ModalState =
   | { type: 'closed' }
-  | { type: 'create'; categoryType: 'income' | 'expense' }
+  | { type: 'create'; categoryType: 'income' | 'expense'; parentId?: string }
   | { type: 'edit'; category: Category }
   | { type: 'delete'; category: Category }
 
@@ -59,6 +59,14 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
     }
   }
 
+  const modalTitle = modal.type === 'create'
+    ? modal.parentId
+      ? `Nova subcategoria de ${modal.categoryType === 'expense' ? 'despesa' : 'receita'}`
+      : `Nova categoria de ${modal.categoryType === 'expense' ? 'despesa' : 'receita'}`
+    : modal.type === 'edit'
+      ? 'Editar categoria'
+      : ''
+
   return (
     <>
       <div className="space-y-6">
@@ -74,6 +82,7 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
             accent="red"
             categories={initialExpenses}
             onAdd={() => setModal({ type: 'create', categoryType: 'expense' })}
+            onAddSub={(parentId) => setModal({ type: 'create', categoryType: 'expense', parentId })}
             onEdit={(c) => setModal({ type: 'edit', category: c })}
             onDelete={(c) => { setDeleteError(null); setModal({ type: 'delete', category: c }) }}
           />
@@ -84,36 +93,23 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
             accent="green"
             categories={initialIncomes}
             onAdd={() => setModal({ type: 'create', categoryType: 'income' })}
+            onAddSub={(parentId) => setModal({ type: 'create', categoryType: 'income', parentId })}
             onEdit={(c) => setModal({ type: 'edit', category: c })}
             onDelete={(c) => { setDeleteError(null); setModal({ type: 'delete', category: c }) }}
           />
         </div>
       </div>
 
-      {modal.type === 'create' && (
-        <Modal
-          title={`Nova categoria de ${modal.categoryType === 'expense' ? 'despesa' : 'receita'}`}
-          onClose={() => setModal({ type: 'closed' })}
-        >
+      {(modal.type === 'create' || modal.type === 'edit') && (
+        <Modal title={modalTitle} onClose={() => setModal({ type: 'closed' })}>
           <CategoryForm
-            fixedType={modal.categoryType}
+            fixedType={modal.type === 'create' ? modal.categoryType : modal.category.type}
+            defaultValues={modal.type === 'edit' ? modal.category : undefined}
+            parentId={modal.type === 'create' ? (modal.parentId ?? null) : null}
             showDREGroup={isBusinessEntity}
-            onSubmit={handleCreate}
+            onSubmit={modal.type === 'create' ? handleCreate : handleUpdate}
             onCancel={() => setModal({ type: 'closed' })}
-            submitLabel="Criar categoria"
-          />
-        </Modal>
-      )}
-
-      {modal.type === 'edit' && (
-        <Modal title="Editar categoria" onClose={() => setModal({ type: 'closed' })}>
-          <CategoryForm
-            defaultValues={modal.category}
-            fixedType={modal.category.type}
-            showDREGroup={isBusinessEntity}
-            onSubmit={handleUpdate}
-            onCancel={() => setModal({ type: 'closed' })}
-            submitLabel="Salvar alterações"
+            submitLabel={modal.type === 'create' ? 'Criar categoria' : 'Salvar alterações'}
           />
         </Modal>
       )}
@@ -155,7 +151,7 @@ export function CategoriesClient({ expenses: initialExpenses, incomes: initialIn
   )
 }
 
-// ─── Category List ─────────────────────────────────────────────────────────────
+// ─── Category List (with accordion) ───────────────────────────────────────────
 
 function CategoryList({
   title,
@@ -163,6 +159,7 @@ function CategoryList({
   accent,
   categories,
   onAdd,
+  onAddSub,
   onEdit,
   onDelete,
 }: {
@@ -171,18 +168,41 @@ function CategoryList({
   accent: 'red' | 'green'
   categories: Category[]
   onAdd: () => void
+  onAddSub: (parentId: string) => void
   onEdit: (c: Category) => void
   onDelete: (c: Category) => void
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
+
+  const byId = new Map(categories.map((c) => [c.id, c]))
+  const parents = categories.filter((c) => !c.parent_id || !byId.has(c.parent_id))
+  const childrenByParent = new Map<string, Category[]>()
+  for (const cat of categories) {
+    if (cat.parent_id && byId.has(cat.parent_id)) {
+      const list = childrenByParent.get(cat.parent_id) ?? []
+      list.push(cat)
+      childrenByParent.set(cat.parent_id, list)
+    }
+  }
+
+  function toggle(id: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const total = categories.length
+
   return (
     <div className="bg-white rounded-2xl border border-gray-100">
       <div className="flex items-center justify-between px-5 py-4 border-b border-gray-50">
         <div className="flex items-center gap-2">
           {icon}
           <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
-          <span className="text-xs text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">
-            {categories.length}
-          </span>
+          <span className="text-xs text-gray-400 bg-gray-100 rounded-full px-2 py-0.5">{total}</span>
         </div>
         <button
           onClick={onAdd}
@@ -194,11 +214,11 @@ function CategoryList({
           )}
         >
           <Plus className="w-3.5 h-3.5" />
-          Nova
+          Nova categoria
         </button>
       </div>
 
-      {categories.length === 0 ? (
+      {parents.length === 0 ? (
         <div className="py-10 text-center text-gray-400">
           <p className="text-sm">Nenhuma categoria ainda.</p>
           <button onClick={onAdd} className="mt-2 text-xs text-emerald-600 hover:text-emerald-700 font-medium">
@@ -207,99 +227,161 @@ function CategoryList({
         </div>
       ) : (
         <ul className="divide-y divide-gray-50">
-          {categories.map((category) => (
-            <CategoryItem
-              key={category.id}
-              category={category}
-              onEdit={() => onEdit(category)}
-              onDelete={() => onDelete(category)}
-            />
-          ))}
+          {parents.map((parent) => {
+            const children = childrenByParent.get(parent.id) ?? []
+            const hasChildren = children.length > 0
+            const isExpanded = expanded.has(parent.id)
+
+            return (
+              <li key={parent.id}>
+                {/* Parent row */}
+                <div className="flex items-center gap-3 px-5 py-3 group hover:bg-gray-50 transition-colors">
+                  {/* Expand chevron */}
+                  <button
+                    type="button"
+                    onClick={() => hasChildren && toggle(parent.id)}
+                    className={cn(
+                      'w-5 h-5 flex items-center justify-center shrink-0 rounded transition-colors',
+                      hasChildren ? 'text-gray-400 hover:text-gray-600' : 'text-transparent cursor-default'
+                    )}
+                    aria-label={isExpanded ? 'Recolher' : 'Expandir'}
+                  >
+                    <ChevronRight
+                      className={cn(
+                        'w-3.5 h-3.5 transition-transform duration-150',
+                        isExpanded && 'rotate-90'
+                      )}
+                    />
+                  </button>
+
+                  <div
+                    className="w-8 h-8 rounded-lg flex items-center justify-center text-base shrink-0"
+                    style={{ backgroundColor: parent.color ? `${parent.color}20` : '#f3f4f6' }}
+                  >
+                    {parent.icon ? (
+                      <span>{parent.icon}</span>
+                    ) : (
+                      <span className="w-3 h-3 rounded-full" style={{ backgroundColor: parent.color ?? '#64748b' }} />
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-900 truncate">{parent.name}</p>
+                    {(parent.is_default || parent.dre_group || hasChildren) && (
+                      <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                        {parent.is_default && <span className="text-xs text-gray-400">Padrão</span>}
+                        {hasChildren && (
+                          <span className="text-xs text-gray-400">{children.length} subcategoria{children.length !== 1 ? 's' : ''}</span>
+                        )}
+                        {parent.dre_group && (
+                          <span className="text-[10px] font-medium bg-blue-50 text-blue-600 rounded px-1.5 py-0.5 leading-none">DRE</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: parent.color ?? '#64748b' }} />
+
+                  <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button
+                      onClick={() => onEdit(parent)}
+                      className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                      title="Editar"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => onAddSub(parent.id)}
+                      className={cn(
+                        'p-1.5 rounded-lg transition-colors',
+                        accent === 'red'
+                          ? 'text-red-400 hover:text-red-600 hover:bg-red-50'
+                          : 'text-emerald-400 hover:text-emerald-600 hover:bg-emerald-50'
+                      )}
+                      title="Nova subcategoria"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                    </button>
+                    {!parent.is_default && (
+                      <button
+                        onClick={() => onDelete(parent)}
+                        className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                        title="Excluir"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Subcategories (accordion) */}
+                {hasChildren && isExpanded && (
+                  <ul className="border-t border-gray-50 bg-gray-50/30">
+                    {children.map((child) => (
+                      <li key={child.id} className="flex items-center gap-3 pl-11 pr-5 py-2.5 group/sub hover:bg-gray-50 transition-colors border-b border-gray-50 last:border-0">
+                        <div
+                          className="w-6 h-6 rounded-md flex items-center justify-center text-sm shrink-0"
+                          style={{ backgroundColor: child.color ? `${child.color}20` : '#f3f4f6' }}
+                        >
+                          {child.icon ? (
+                            <span className="text-xs">{child.icon}</span>
+                          ) : (
+                            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: child.color ?? '#64748b' }} />
+                          )}
+                        </div>
+
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-gray-700 truncate">{child.name}</p>
+                        </div>
+
+                        <div className="flex gap-1 opacity-0 group-hover/sub:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => onEdit(child)}
+                            className="p-1 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+                          >
+                            <Pencil className="w-3 h-3" />
+                          </button>
+                          {!child.is_default && (
+                            <button
+                              onClick={() => onDelete(child)}
+                              className="p-1 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+
+                    {/* Add sub button inside expanded parent */}
+                    <li>
+                      <button
+                        onClick={() => onAddSub(parent.id)}
+                        className={cn(
+                          'w-full flex items-center gap-2 pl-11 pr-5 py-2 text-xs transition-colors',
+                          accent === 'red'
+                            ? 'text-red-500 hover:bg-red-50'
+                            : 'text-emerald-600 hover:bg-emerald-50'
+                        )}
+                      >
+                        <Plus className="w-3 h-3" />
+                        Nova subcategoria
+                      </button>
+                    </li>
+                  </ul>
+                )}
+              </li>
+            )
+          })}
         </ul>
       )}
     </div>
   )
 }
 
-// ─── Category Item ─────────────────────────────────────────────────────────────
-
-function CategoryItem({
-  category,
-  onEdit,
-  onDelete,
-}: {
-  category: Category
-  onEdit: () => void
-  onDelete: () => void
-}) {
-  return (
-    <li className="flex items-center gap-3 px-5 py-3 group hover:bg-gray-50 transition-colors">
-      <div
-        className="w-8 h-8 rounded-lg flex items-center justify-center text-base shrink-0"
-        style={{ backgroundColor: category.color ? `${category.color}20` : '#f3f4f6' }}
-      >
-        {category.icon ? (
-          <span>{category.icon}</span>
-        ) : (
-          <span
-            className="w-3 h-3 rounded-full"
-            style={{ backgroundColor: category.color ?? '#64748b' }}
-          />
-        )}
-      </div>
-
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-gray-900 truncate">{category.name}</p>
-        {(category.is_default || category.dre_group) && (
-          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-            {category.is_default && (
-              <span className="text-xs text-gray-400">Padrão</span>
-            )}
-            {category.dre_group && (
-              <span className="text-[10px] font-medium bg-blue-50 text-blue-600 rounded px-1.5 py-0.5 leading-none">
-                DRE
-              </span>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div
-        className="w-3 h-3 rounded-full shrink-0"
-        style={{ backgroundColor: category.color ?? '#64748b' }}
-      />
-
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          onClick={onEdit}
-          className="p-1.5 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
-        >
-          <Pencil className="w-3.5 h-3.5" />
-        </button>
-        {!category.is_default && (
-          <button
-            onClick={onDelete}
-            className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        )}
-      </div>
-    </li>
-  )
-}
-
 // ─── Modal ─────────────────────────────────────────────────────────────────────
 
-function Modal({
-  title,
-  onClose,
-  children,
-}: {
-  title: string
-  onClose: () => void
-  children: React.ReactNode
-}) {
+function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />

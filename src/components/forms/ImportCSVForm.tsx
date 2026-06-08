@@ -7,8 +7,10 @@ import {
 import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
+import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
+import { buildCategoryTree } from '@/components/ui/CategorySelect'
 import type { Account, Category } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -28,6 +30,7 @@ interface EditableRow {
   amount: number        // signed: negative = expense, positive = income
   type: 'income' | 'expense'
   categoryId: string | null
+  source: 'rule' | 'ai' | 'manual' | null
   checked: boolean
   error?: string
   raw: string
@@ -84,12 +87,14 @@ function suggestCategoryId(description: string, categories: Category[]): string 
 function parsedToEditable(parsed: ParsedRow[], categories: Category[]): EditableRow[] {
   return parsed.map(r => {
     const isBalanceRow = BALANCE_ROW_RE.test(r.description ?? '')
+    const categoryId = r.error || isBalanceRow ? null : suggestCategoryId(r.description, categories)
     return {
       date: r.date,
       description: r.description,
       amount: r.amount,
       type: r.type as 'income' | 'expense',
-      categoryId: r.error || isBalanceRow ? null : suggestCategoryId(r.description, categories),
+      categoryId,
+      source: categoryId ? 'manual' : null,
       checked: !r.error && !isBalanceRow,
       error: r.error,
       raw: r.raw ?? '',
@@ -384,8 +389,10 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
         setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
         if (isMappingValid(detected)) {
-          setEditableRows(parsedToEditable(applyMapping(headers, normalizedRaw, detected), cats))
+          const parsed = parsedToEditable(applyMapping(headers, normalizedRaw, detected), cats)
+          setEditableRows(parsed)
           setStep('preview')
+          runAiSuggestions(parsed)
         } else { setStep('mapping') }
       }
 
@@ -420,8 +427,10 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
         if (isMappingValid(detected)) {
-          setEditableRows(parsedToEditable(applyMapping(headers, raw, detected), cats))
+          const parsed = parsedToEditable(applyMapping(headers, raw, detected), cats)
+          setEditableRows(parsed)
           setStep('preview')
+          runAiSuggestions(parsed)
         } else {
           console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
           setStep('mapping')
@@ -430,22 +439,26 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
       else if (fmt === 'ofx') {
         const text = await file.text()
-        const parsed = parseOFX(text)
-        if (!parsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-        setEditableRows(parsedToEditable(parsed, cats))
+        const rawParsed = parseOFX(text)
+        if (!rawParsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
+        const parsed = parsedToEditable(rawParsed, cats)
+        setEditableRows(parsed)
         setStep('preview')
+        runAiSuggestions(parsed)
       }
 
       else if (fmt === 'pdf') {
         const fd = new FormData()
         fd.append('file', file)
-        const parsed = await parsePDFAction(fd)
-        if (!parsed.length || (parsed.length === 1 && parsed[0].error)) {
-          setParseError(parsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
+        const rawParsed = await parsePDFAction(fd)
+        if (!rawParsed.length || (rawParsed.length === 1 && rawParsed[0].error)) {
+          setParseError(rawParsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
           setStep('idle'); return
         }
-        setEditableRows(parsedToEditable(parsed, cats))
+        const parsed = parsedToEditable(rawParsed, cats)
+        setEditableRows(parsed)
         setStep('preview')
+        runAiSuggestions(parsed)
       }
     } catch (err) {
       setParseError(`Erro ao processar o arquivo: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
@@ -454,16 +467,44 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   }
 
   function applyManualMapping() {
-    const parsed = applyMapping(rawHeaders, rawRows, colMap)
-    setEditableRows(parsedToEditable(parsed, catsRef.current))
+    const parsed = parsedToEditable(applyMapping(rawHeaders, rawRows, colMap), catsRef.current)
+    setEditableRows(parsed)
     setStep('preview')
+    runAiSuggestions(parsed)
   }
 
   function handleCategoryChange(rowIdx: number, value: string) {
     if (value === '__new__') {
       setNewCat({ rowIdx, name: '', color: '#6b7280', saving: false })
     } else {
-      updateRow(rowIdx, { categoryId: value || null })
+      updateRow(rowIdx, { categoryId: value || null, source: value ? 'manual' : null })
+    }
+  }
+
+  async function runAiSuggestions(rows: EditableRow[]) {
+    const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && r.checked)
+    const BATCH = 5
+    for (let b = 0; b < toSuggest.length; b += BATCH) {
+      const batch = toSuggest.slice(b, b + BATCH)
+      const results = await Promise.all(
+        batch.map(({ i: idx, r }) =>
+          suggestCategory(r.description, null).then(s => ({ idx, s })).catch(() => null)
+        )
+      )
+      setEditableRows(prev => {
+        const next = [...prev]
+        for (const item of results) {
+          if (!item) continue
+          const { idx, s } = item
+          if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
+            // Only override if no category was already set, or if this is a high-confidence rule
+            if (!next[idx].categoryId || (s.source === 'rule' && next[idx].source === 'manual')) {
+              next[idx] = { ...next[idx], categoryId: s.category_id, source: s.source }
+            }
+          }
+        }
+        return next
+      })
     }
   }
 
@@ -489,23 +530,30 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     console.log('[ImportCSVForm] Categorias depois:', updated.length, '| nova:', newCategory.name, newCategory.id)
     setAllCategories(updated)
     catsRef.current = updated
-    updateRow(rowIdx, { categoryId: newCategory.id })
+    updateRow(rowIdx, { categoryId: newCategory.id, source: 'manual' })
     setNewCat(null)
   }
 
   async function handleImport() {
     if (!selectedAccount) return
     setImporting(true)
-    const valid: CSVRow[] = editableRows
-      .filter(r => r.checked && !r.error && r.date)
-      .map(r => ({
-        date: r.date,
-        description: r.description,
-        amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
-        account_id: selectedAccount,
-        category_id: r.categoryId ?? null,
-      }))
+    const toImport = editableRows.filter(r => r.checked && !r.error && r.date)
+    const valid: CSVRow[] = toImport.map(r => ({
+      date: r.date,
+      description: r.description,
+      amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
+      account_id: selectedAccount,
+      category_id: r.categoryId ?? null,
+    }))
     const res = await importTransactions(valid)
+
+    // Learn rules for confirmed rows that have a category
+    for (const r of toImport) {
+      if (r.categoryId && r.description) {
+        learnRule(r.description, r.categoryId, null).catch(() => {})
+      }
+    }
+
     setResult(res)
     setImporting(false)
     setStep('done')
@@ -725,7 +773,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                   <col className="w-8" />
                   <col className="w-24" />
                   <col />
-                  <col className="w-36" />
+                  <col className="w-32" />
+                  <col className="w-14" />
                   <col className="w-24" />
                   <col className="w-24" />
                 </colgroup>
@@ -742,6 +791,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Data</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Descrição</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Categoria</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Fonte</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Tipo</th>
                     <th className="text-right px-2 py-2 text-gray-500 font-medium">Valor</th>
                   </tr>
@@ -787,18 +837,52 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Category */}
                       <td className="px-2 py-1.5">
-                        <select
-                          value={row.categoryId ?? ''}
-                          onChange={e => handleCategoryChange(i, e.target.value)}
-                          disabled={!!row.error}
-                          className="w-full bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
-                        >
-                          <option value="">— categoria —</option>
-                          {allCategories.map(c => (
-                            <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
-                          ))}
-                          <option value="__new__">+ Nova categoria</option>
-                        </select>
+                        {(() => {
+                          const { parents, childrenByParent } = buildCategoryTree(allCategories)
+                          return (
+                            <select
+                              value={row.categoryId ?? ''}
+                              onChange={e => handleCategoryChange(i, e.target.value)}
+                              disabled={!!row.error}
+                              className="w-full bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
+                            >
+                              <option value="">— categoria —</option>
+                              {parents.map(parent => {
+                                const children = childrenByParent.get(parent.id) ?? []
+                                if (children.length === 0) {
+                                  return <option key={parent.id} value={parent.id}>{parent.icon} {parent.name}</option>
+                                }
+                                return (
+                                  <optgroup key={parent.id} label={`${parent.icon ?? ''} ${parent.name}`}>
+                                    {children.map(child => (
+                                      <option key={child.id} value={child.id}>{child.icon} {child.name}</option>
+                                    ))}
+                                  </optgroup>
+                                )
+                              })}
+                              <option value="__new__">+ Nova categoria</option>
+                            </select>
+                          )
+                        })()}
+                      </td>
+
+                      {/* Source badge */}
+                      <td className="px-2 py-1.5">
+                        {row.source === 'rule' && (
+                          <span className="inline-block px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 text-[10px] font-medium whitespace-nowrap">
+                            Regra
+                          </span>
+                        )}
+                        {row.source === 'ai' && (
+                          <span className="inline-block px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 text-[10px] font-medium whitespace-nowrap">
+                            IA
+                          </span>
+                        )}
+                        {row.source === 'manual' && (
+                          <span className="inline-block px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-medium whitespace-nowrap">
+                            Manual
+                          </span>
+                        )}
                       </td>
 
                       {/* Type toggle */}

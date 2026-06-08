@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
+import { CategorySelect } from '@/components/ui/CategorySelect'
 import type { TransacaoPrevista, BudgetPrevisao, ChartPoint } from '@/lib/actions/previsao'
 import type { Category } from '@/types'
 
@@ -450,16 +451,12 @@ export function PrevisaoClient({ realizadas, previstas, budgets, chartData, cate
                   onChange={(e) => setHypDesc(e.target.value)}
                   className="col-span-2 px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
-                <select
+                <CategorySelect
+                  categories={filteredCategories}
                   value={hypCategoryId}
-                  onChange={(e) => setHypCategoryId(e.target.value)}
-                  className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                >
-                  <option value="">Sem categoria</option>
-                  {filteredCategories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
-                  ))}
-                </select>
+                  onChange={setHypCategoryId}
+                  className="min-w-[180px]"
+                />
                 <input
                   type="number"
                   placeholder="Valor"

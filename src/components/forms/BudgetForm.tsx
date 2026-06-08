@@ -6,6 +6,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2 } from 'lucide-react'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
+import { CategorySelect } from '@/components/ui/CategorySelect'
 import type { BudgetFormData } from '@/lib/actions/budgets'
 import type { Category } from '@/types'
 
@@ -79,17 +80,20 @@ export function BudgetForm({
       {/* Category */}
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1.5">Categoria</label>
-        <select
-          {...register('category_id')}
-          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-        >
-          <option value="">Selecione uma categoria</option>
-          {categories.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.icon ? `${c.icon} ` : ''}{c.name}
-            </option>
-          ))}
-        </select>
+        <Controller
+          name="category_id"
+          control={control}
+          render={({ field }) => (
+            <CategorySelect
+              categories={categories}
+              value={field.value ?? ''}
+              onChange={field.onChange}
+              placeholder="Selecione uma categoria"
+              allowEmpty={false}
+              selectableParents
+            />
+          )}
+        />
         {errors.category_id && (
           <p className="mt-1 text-xs text-red-600">{errors.category_id.message}</p>
         )}

@@ -1,12 +1,14 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, Bell } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
+import { CategorySelect } from '@/components/ui/CategorySelect'
+import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import type { Account, Category, RecurringRule } from '@/types'
 
 export const FREQUENCY_LABELS: Record<string, string> = {
@@ -68,6 +70,13 @@ export function RecurringForm({
 }: RecurringFormProps) {
   const [serverError, setServerError] = useState<string | null>(null)
   const [removeExistingAlert, setRemoveExistingAlert] = useState(false)
+  const [aiSuggestion, setAiSuggestion] = useState<{
+    source: 'rule' | 'ai'
+    category_name: string
+    category_id: string
+  } | null>(null)
+  const [suggesting, setSuggesting] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const hasExistingAlert = !!defaultValues?.bill_alert
   const today = new Date().toISOString().split('T')[0]
@@ -105,6 +114,39 @@ export function RecurringForm({
     if (createAlert) setRemoveExistingAlert(false)
   }, [createAlert])
 
+  async function triggerSuggest(name: string) {
+    if (!name.trim()) return
+    setSuggesting(true)
+    try {
+      const s = await suggestCategory(name, null)
+      if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
+        const current = watch('category_id')
+        if (!current) {
+          setValue('category_id', s.category_id)
+          setAiSuggestion({ source: s.source, category_name: s.category_name, category_id: s.category_id })
+        }
+      }
+    } catch {
+      // silent
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  const { onChange: rhfNameOnChange, onBlur: rhfNameOnBlur, ...nameRegRest } = register('name')
+
+  function handleNameChange(e: React.ChangeEvent<HTMLInputElement>) {
+    rhfNameOnChange(e)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => triggerSuggest(e.target.value), 600)
+  }
+
+  function handleNameBlur(e: React.FocusEvent<HTMLInputElement>) {
+    rhfNameOnBlur(e)
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
+    if (e.target.value.trim()) triggerSuggest(e.target.value)
+  }
+
   async function handleFormSubmit(raw: RecurringFormRaw) {
     setServerError(null)
     const result = await onSubmit({
@@ -115,7 +157,11 @@ export function RecurringForm({
       alert_end_date: raw.alert_end_date || null,
       remove_alert: hasExistingAlert && !raw.create_alert ? removeExistingAlert : undefined,
     })
-    if (result.error) setServerError(result.error)
+    if (result.error) { setServerError(result.error); return }
+
+    if (raw.name && raw.category_id) {
+      learnRule(raw.name, raw.category_id, null).catch(() => {})
+    }
   }
 
   return (
@@ -156,7 +202,9 @@ export function RecurringForm({
         <input
           type="text"
           placeholder="Ex: Aluguel, Salário mensal..."
-          {...register('name')}
+          {...nameRegRest}
+          onChange={handleNameChange}
+          onBlur={handleNameBlur}
           className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
         />
         {errors.name && (
@@ -215,16 +263,34 @@ export function RecurringForm({
 
       {/* Category */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-1.5">Categoria</label>
-        <select
-          {...register('category_id')}
-          className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-        >
-          <option value="">Sem categoria</option>
-          {filteredCategories.map((c) => (
-            <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
-          ))}
-        </select>
+        <div className="flex items-center justify-between mb-1.5">
+          <label className="block text-sm font-medium text-gray-700">Categoria</label>
+          {suggesting && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
+          {!suggesting && aiSuggestion && (
+            <span className={cn(
+              'text-xs px-2 py-0.5 rounded-full font-medium',
+              aiSuggestion.source === 'rule'
+                ? 'bg-blue-50 text-blue-600'
+                : 'bg-purple-50 text-purple-600'
+            )}>
+              {aiSuggestion.source === 'rule' ? '✓ Regra' : '✨ Sugerido por IA'}
+            </span>
+          )}
+        </div>
+        <Controller
+          name="category_id"
+          control={control}
+          render={({ field }) => (
+            <CategorySelect
+              categories={filteredCategories}
+              value={field.value ?? ''}
+              onChange={(val) => {
+                field.onChange(val)
+                if (aiSuggestion && val !== aiSuggestion.category_id) setAiSuggestion(null)
+              }}
+            />
+          )}
+        />
       </div>
 
       <div className="grid grid-cols-2 gap-4">

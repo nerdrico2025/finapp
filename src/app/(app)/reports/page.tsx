@@ -12,6 +12,7 @@ import { getBudgetsWithSpending } from '@/lib/actions/budgets'
 import { ExpensesByCategoryChart } from '@/components/charts/ExpensesByCategoryChart'
 import { MonthlyOverviewChart } from '@/components/charts/MonthlyOverviewChart'
 import { MonthNavigator } from '@/components/ui/MonthNavigator'
+import { ExpenseCategoryTable, IncomeCategoryTable } from './CategoryTable'
 import { formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 
@@ -108,88 +109,11 @@ export default async function ReportsPage({
           <h2 className="text-sm font-semibold text-gray-900">Despesas por categoria</h2>
           {totalExpenses > 0 && (
             <p className="text-xs text-gray-400 mt-0.5">
-              Total: {formatCurrency(totalExpenses)}
+              Total: {formatCurrency(totalExpenses)} — clique em uma linha para ver subcategorias
             </p>
           )}
         </div>
-
-        {expensesByCategory.length === 0 ? (
-          <div className="py-10 text-center text-sm text-gray-400">
-            Nenhuma despesa neste período.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-50">
-                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-400">Categoria</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-400">Valor</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-400">% total</th>
-                  <th className="px-5 py-3 text-xs font-medium text-gray-400 min-w-[200px]">vs Orçamento</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {expensesByCategory.map((cat) => {
-                  const pct = totalExpenses > 0 ? (cat.amount / totalExpenses) * 100 : 0
-                  const budget = budgetMap.get(cat.category_id)
-                  const budgetPct = budget ? (cat.amount / budget.amount) * 100 : null
-                  const barColor =
-                    budgetPct === null ? '#10b981'
-                    : budgetPct > 90   ? '#ef4444'
-                    : budgetPct > 70   ? '#f59e0b'
-                    :                    '#10b981'
-
-                  return (
-                    <tr key={cat.category_id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-sm shrink-0"
-                            style={{ backgroundColor: cat.color ? `${cat.color}20` : '#f1f5f9' }}
-                          >
-                            {cat.icon ?? '·'}
-                          </div>
-                          <span className="font-medium text-gray-900">{cat.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-red-600">
-                        {formatCurrency(cat.amount)}
-                      </td>
-                      <td className="px-4 py-3.5 text-right text-gray-500">
-                        {pct.toFixed(1)}%
-                      </td>
-                      <td className="px-5 py-3.5">
-                        {budget ? (
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <div className="flex-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full rounded-full transition-all"
-                                  style={{
-                                    width: `${Math.min(budgetPct ?? 0, 100)}%`,
-                                    backgroundColor: barColor,
-                                  }}
-                                />
-                              </div>
-                              <span className="text-xs text-gray-400 shrink-0 tabular-nums">
-                                {(budgetPct ?? 0).toFixed(0)}%
-                              </span>
-                            </div>
-                            <p className="text-xs text-gray-400">
-                              de {formatCurrency(budget.amount)}
-                            </p>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-gray-300">Sem orçamento</span>
-                        )}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <ExpenseCategoryTable data={expensesByCategory} total={totalExpenses} budgetMap={budgetMap} />
       </div>
 
       {/* ── Income Table ─────────────────────────────────────────────────── */}
@@ -202,60 +126,7 @@ export default async function ReportsPage({
             </p>
           )}
         </div>
-
-        {incomeByCategory.length === 0 ? (
-          <div className="py-10 text-center text-sm text-gray-400">
-            Nenhuma receita neste período.
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-50">
-                  <th className="text-left px-5 py-3 text-xs font-medium text-gray-400">Categoria</th>
-                  <th className="text-right px-4 py-3 text-xs font-medium text-gray-400">Valor</th>
-                  <th className="text-right px-5 py-3 text-xs font-medium text-gray-400">% total</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-50">
-                {incomeByCategory.map((cat) => {
-                  const pct = totalIncome > 0 ? (cat.amount / totalIncome) * 100 : 0
-                  return (
-                    <tr key={cat.category_id} className="hover:bg-gray-50/50 transition-colors">
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center gap-2.5">
-                          <div
-                            className="w-7 h-7 rounded-lg flex items-center justify-center text-sm shrink-0"
-                            style={{ backgroundColor: cat.color ? `${cat.color}20` : '#f1f5f9' }}
-                          >
-                            {cat.icon ?? '·'}
-                          </div>
-                          <span className="font-medium text-gray-900">{cat.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3.5 text-right font-semibold tabular-nums text-emerald-600">
-                        {formatCurrency(cat.amount)}
-                      </td>
-                      <td className="px-5 py-3.5">
-                        <div className="flex items-center justify-end gap-2">
-                          <div className="w-20 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                              className="h-full rounded-full bg-emerald-500"
-                              style={{ width: `${pct}%` }}
-                            />
-                          </div>
-                          <span className="text-gray-500 tabular-nums w-10 text-right">
-                            {pct.toFixed(1)}%
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <IncomeCategoryTable data={incomeByCategory} total={totalIncome} />
       </div>
     </div>
   )

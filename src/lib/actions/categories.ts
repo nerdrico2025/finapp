@@ -11,6 +11,7 @@ export interface CategoryFormData {
   icon: string
   color: string
   parent_id?: string | null
+  is_default?: boolean
   dre_group?: string | null
 }
 
@@ -64,8 +65,8 @@ export async function createCategory(formData: CategoryFormData) {
     icon: formData.icon || null,
     color: formData.color || null,
     parent_id: formData.parent_id ?? null,
+    is_default: formData.is_default ?? false,
     dre_group: formData.dre_group ?? null,
-    is_default: false,
   }).select().single()
 
   if (error) return { error: error.message, data: null }
@@ -174,28 +175,140 @@ export async function seedDefaultCategories(userId: string) {
 
   const entityId = await getActiveEntityId(supabase, userId)
 
-  const expenses = [
-    { name: 'Alimentação', icon: '🍽️', color: '#ef4444' },
-    { name: 'Transporte', icon: '🚗', color: '#f97316' },
-    { name: 'Moradia', icon: '🏠', color: '#8b5cf6' },
-    { name: 'Saúde', icon: '💊', color: '#ec4899' },
-    { name: 'Lazer', icon: '🎮', color: '#3b82f6' },
-    { name: 'Educação', icon: '📚', color: '#14b8a6' },
-    { name: 'Vestuário', icon: '👕', color: '#f59e0b' },
-    { name: 'Outros', icon: '📦', color: '#64748b' },
+  const base = { user_id: userId, entity_id: entityId, is_default: false }
+
+  // ── Expense parents ──────────────────────────────────────────────────────────
+  const expenseParents = [
+    { name: 'Moradia',              icon: '🏠', color: '#8b5cf6' },
+    { name: 'Alimentação',          icon: '🍽️', color: '#ef4444' },
+    { name: 'Saúde',                icon: '💊', color: '#ec4899' },
+    { name: 'Educação',             icon: '📚', color: '#14b8a6' },
+    { name: 'Lazer e Entretenimento', icon: '🎬', color: '#3b82f6' },
+    { name: 'Finanças e Dívidas',   icon: '💳', color: '#6366f1' },
+    { name: 'Vestuário',            icon: '👕', color: '#f59e0b' },
+    { name: 'Pets',                 icon: '🐾', color: '#f97316' },
+    { name: 'Impostos e Taxas',     icon: '📋', color: '#64748b' },
+    { name: 'Outros',               icon: '📦', color: '#9ca3af' },
+  ] as const
+
+  const { data: insertedParents } = await supabase
+    .from('categories')
+    .insert(expenseParents.map(c => ({ ...base, ...c, type: 'expense' as CategoryType, parent_id: null })))
+    .select('id, name')
+
+  const parentId = (name: string) =>
+    insertedParents?.find(p => p.name === name)?.id ?? null
+
+  // ── Expense subcategories ────────────────────────────────────────────────────
+  type Sub = { name: string; icon: string; color: string }
+  const expenseSubs: { parent: string; color: string; subs: Omit<Sub, 'color'>[] }[] = [
+    {
+      parent: 'Moradia', color: '#8b5cf6',
+      subs: [
+        { name: 'Aluguel',            icon: '🏠' },
+        { name: 'Condomínio',         icon: '🏢' },
+        { name: 'Energia elétrica',   icon: '⚡' },
+        { name: 'Água e esgoto',      icon: '💧' },
+        { name: 'Internet',           icon: '📡' },
+        { name: 'IPVA e seguro auto', icon: '🚗' },
+      ],
+    },
+    {
+      parent: 'Alimentação', color: '#ef4444',
+      subs: [
+        { name: 'Supermercado',                icon: '🛒' },
+        { name: 'Restaurantes e lanchonetes',  icon: '🍴' },
+        { name: 'Delivery',                    icon: '🛵' },
+        { name: 'Padaria e café',              icon: '☕' },
+      ],
+    },
+    {
+      parent: 'Saúde', color: '#ec4899',
+      subs: [
+        { name: 'Plano de saúde',       icon: '🏥' },
+        { name: 'Consultas médicas',    icon: '👨‍⚕️' },
+        { name: 'Medicamentos',         icon: '💊' },
+        { name: 'Exames laboratoriais', icon: '🔬' },
+        { name: 'Academia e bem-estar', icon: '🏋️' },
+      ],
+    },
+    {
+      parent: 'Educação', color: '#14b8a6',
+      subs: [
+        { name: 'Escola e faculdade',        icon: '🎓' },
+        { name: 'Cursos e treinamentos',     icon: '📖' },
+        { name: 'Livros e material escolar', icon: '📚' },
+      ],
+    },
+    {
+      parent: 'Lazer e Entretenimento', color: '#3b82f6',
+      subs: [
+        { name: 'Streaming (Netflix, Spotify…)', icon: '📺' },
+        { name: 'Viagens e hospedagem',          icon: '✈️' },
+        { name: 'Cinema, teatro e shows',        icon: '🎭' },
+        { name: 'Hobbies e esportes',            icon: '⚽' },
+      ],
+    },
+    {
+      parent: 'Finanças e Dívidas', color: '#6366f1',
+      subs: [
+        { name: 'Financiamento imobiliário',  icon: '🏗️' },
+        { name: 'Financiamento de veículo',   icon: '🚘' },
+        { name: 'Empréstimo pessoal',         icon: '🏦' },
+        { name: 'Consórcio',                  icon: '📑' },
+        { name: 'Cartão de crédito (fatura)', icon: '💳' },
+        { name: 'Tarifas bancárias',          icon: '🏛️' },
+      ],
+    },
+    {
+      parent: 'Vestuário', color: '#f59e0b',
+      subs: [
+        { name: 'Roupas',                icon: '👗' },
+        { name: 'Calçados e acessórios', icon: '👟' },
+      ],
+    },
+    {
+      parent: 'Pets', color: '#f97316',
+      subs: [
+        { name: 'Ração e petiscos', icon: '🦴' },
+        { name: 'Veterinário',      icon: '🐶' },
+        { name: 'Pet shop e banho', icon: '🛁' },
+      ],
+    },
+    {
+      parent: 'Impostos e Taxas', color: '#64748b',
+      subs: [
+        { name: 'Imposto de Renda', icon: '📄' },
+        { name: 'Outras taxas',     icon: '📋' },
+      ],
+    },
   ]
 
-  const incomes = [
-    { name: 'Salário', icon: '💼', color: '#10b981' },
-    { name: 'Freelance', icon: '💻', color: '#06b6d4' },
-    { name: 'Investimentos', icon: '📈', color: '#84cc16' },
-    { name: 'Outros', icon: '💰', color: '#6366f1' },
-  ]
+  const subRows = expenseSubs.flatMap(({ parent, color, subs }) => {
+    const pid = parentId(parent)
+    if (!pid) return []
+    return subs.map(s => ({ ...base, ...s, color, type: 'expense' as CategoryType, parent_id: pid }))
+  })
 
-  const rows = [
-    ...expenses.map((c) => ({ ...c, type: 'expense' as CategoryType, user_id: userId, entity_id: entityId, is_default: false, parent_id: null })),
-    ...incomes.map((c) => ({ ...c, type: 'income' as CategoryType, user_id: userId, entity_id: entityId, is_default: false, parent_id: null })),
-  ]
+  // ── Income parent ────────────────────────────────────────────────────────────
+  const { data: incomeParents } = await supabase
+    .from('categories')
+    .insert([{ ...base, name: 'Receitas', type: 'income' as CategoryType, icon: '💰', color: '#10b981', parent_id: null }])
+    .select('id')
 
-  await supabase.from('categories').insert(rows)
+  const receitasId = incomeParents?.[0]?.id ?? null
+
+  // ── Income subcategories ─────────────────────────────────────────────────────
+  const incomeSubs = receitasId ? [
+    { name: 'Salário',                      icon: '💼' },
+    { name: 'Freelance e renda extra',      icon: '💻' },
+    { name: 'Aluguel recebido',             icon: '🏠' },
+    { name: 'Rendimentos de investimentos', icon: '📈' },
+    { name: 'Reembolsos',                   icon: '↩️' },
+    { name: 'Outros recebimentos',          icon: '💰' },
+  ].map(s => ({ ...base, ...s, color: '#10b981', type: 'income' as CategoryType, parent_id: receitasId })) : []
+
+  if (subRows.length > 0 || incomeSubs.length > 0) {
+    await supabase.from('categories').insert([...subRows, ...incomeSubs])
+  }
 }

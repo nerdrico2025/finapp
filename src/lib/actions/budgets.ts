@@ -59,15 +59,46 @@ export async function getBudgetsWithSpending(month: number, year: number) {
 
   const { data: transactions } = await txQuery
 
-  const spentByCategory = new Map<string, number>()
+  // Build category → parent map so parent budgets can absorb subcategory spending
+  const budgetedCategoryIds = new Set(rawBudgets.map((b) => b.category_id))
+
+  // Fetch parent_id for ALL categories that appear in transactions (to resolve ancestry)
+  const txCategoryIds = Array.from(new Set((transactions ?? []).map((t) => t.category_id).filter((id): id is string => !!id)))
+  let categoryParentMap = new Map<string, string | null>()
+  if (txCategoryIds.length > 0) {
+    const { data: cats } = await supabase
+      .from('categories')
+      .select('id, parent_id')
+      .in('id', txCategoryIds.filter((id): id is string => id !== null))
+    for (const c of (cats ?? []) as { id: string; parent_id: string | null }[]) {
+      categoryParentMap.set(c.id, c.parent_id)
+    }
+  }
+
+  // For each transaction decide which budget category to charge
+  const spentByBudgetCategory = new Map<string, number>()
   for (const tx of transactions ?? []) {
-    if (tx.category_id) {
-      spentByCategory.set(tx.category_id, (spentByCategory.get(tx.category_id) ?? 0) + tx.amount)
+    if (!tx.category_id) continue
+    let chargeId: string | null = null
+
+    if (budgetedCategoryIds.has(tx.category_id)) {
+      // Exact match — subcategory budget takes priority
+      chargeId = tx.category_id
+    } else {
+      // Fall back to parent budget if it exists
+      const parentId = categoryParentMap.get(tx.category_id)
+      if (parentId && budgetedCategoryIds.has(parentId)) {
+        chargeId = parentId
+      }
+    }
+
+    if (chargeId) {
+      spentByBudgetCategory.set(chargeId, (spentByBudgetCategory.get(chargeId) ?? 0) + tx.amount)
     }
   }
 
   const enriched = (rawBudgets as unknown as BudgetWithSpending[]).map((budget) => {
-    const spent = spentByCategory.get(budget.category_id) ?? 0
+    const spent = spentByBudgetCategory.get(budget.category_id) ?? 0
     const percentage = budget.amount > 0 ? (spent / budget.amount) * 100 : 0
     return { ...budget, spent, percentage }
   })

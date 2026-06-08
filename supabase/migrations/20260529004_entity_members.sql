@@ -134,6 +134,12 @@ CREATE TRIGGER on_entity_created_add_owner
 -- -----------------------------------------------------------------------------
 ALTER TABLE public.entity_members ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "entity_members_select"             ON public.entity_members;
+DROP POLICY IF EXISTS "entity_members_insert"             ON public.entity_members;
+DROP POLICY IF EXISTS "entity_members_update_by_admin"   ON public.entity_members;
+DROP POLICY IF EXISTS "entity_members_accept_own"        ON public.entity_members;
+DROP POLICY IF EXISTS "entity_members_delete"            ON public.entity_members;
+
 -- SELECT: see members of any entity you belong to (accepted or pending)
 CREATE POLICY "entity_members_select"
     ON public.entity_members FOR SELECT

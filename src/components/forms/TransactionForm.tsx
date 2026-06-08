@@ -1,13 +1,15 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Loader2, AlertTriangle, X } from 'lucide-react'
+import { Loader2, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { createTransaction, createTransfer, updateTransaction } from '@/lib/actions/transactions'
+import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
+import { CategorySelect } from '@/components/ui/CategorySelect'
 import type { Account, Category } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
 
@@ -53,6 +55,13 @@ export function TransactionForm({
   const [serverError, setServerError] = useState<string | null>(null)
   const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
   const [pendingData, setPendingData] = useState<TransactionFormRaw | null>(null)
+  const [aiSuggestion, setAiSuggestion] = useState<{
+    source: 'rule' | 'ai' | 'keyword'
+    category_name: string
+    category_id: string
+  } | null>(null)
+  const [suggesting, setSuggesting] = useState(false)
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const today = new Date().toISOString().split('T')[0]
 
@@ -90,6 +99,39 @@ export function TransactionForm({
     type === 'transfer' ? false : c.type === (type === 'income' ? 'income' : 'expense')
   )
 
+  async function triggerSuggest(desc: string) {
+    if (!desc.trim() || type === 'transfer') return
+    setSuggesting(true)
+    try {
+      const s = await suggestCategory(desc, null)
+      if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
+        const current = watch('category_id')
+        if (!current) {
+          setValue('category_id', s.category_id)
+          setAiSuggestion({ source: s.source, category_name: s.category_name, category_id: s.category_id })
+        }
+      }
+    } catch {
+      // suggestion failure is silent
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  const { onChange: rhfDescOnChange, onBlur: rhfDescOnBlur, ...descRegRest } = register('description')
+
+  function handleDescChange(e: React.ChangeEvent<HTMLInputElement>) {
+    rhfDescOnChange(e)
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => triggerSuggest(e.target.value), 600)
+  }
+
+  function handleDescBlur(e: React.FocusEvent<HTMLInputElement>) {
+    rhfDescOnBlur(e)
+    if (debounceRef.current) { clearTimeout(debounceRef.current); debounceRef.current = null }
+    if (e.target.value.trim()) triggerSuggest(e.target.value)
+  }
+
   async function submitForm(data: TransactionFormRaw, force = false) {
     setServerError(null)
 
@@ -108,6 +150,9 @@ export function TransactionForm({
     if (isEditing) {
       const result = await updateTransaction(transactionId!, payload)
       if (result.error) { setServerError(result.error); return }
+      if (payload.description && payload.category_id) {
+        learnRule(payload.description, payload.category_id, null).catch(() => {})
+      }
       onSuccess()
       return
     }
@@ -132,6 +177,9 @@ export function TransactionForm({
       return
     }
 
+    if (payload.description && payload.category_id) {
+      learnRule(payload.description, payload.category_id, null).catch(() => {})
+    }
     onSuccess()
   }
 
@@ -264,34 +312,54 @@ export function TransactionForm({
           </div>
         )}
 
-        {/* Category (not for transfer) */}
-        {type !== 'transfer' && (
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1.5">Categoria</label>
-            <select
-              {...register('category_id')}
-              className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
-            >
-              <option value="">Sem categoria</option>
-              {filteredCategories.map((cat) => (
-                <option key={cat.id} value={cat.id}>
-                  {cat.icon} {cat.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Description */}
+        {/* Description — placed before category so blur can pre-fill it */}
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Descrição</label>
           <input
             type="text"
             placeholder="Ex: Almoço no restaurante..."
-            {...register('description')}
+            {...descRegRest}
+            onChange={handleDescChange}
+            onBlur={handleDescBlur}
             className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
           />
         </div>
+
+        {/* Category (not for transfer) */}
+        {type !== 'transfer' && (
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-sm font-medium text-gray-700">Categoria</label>
+              {suggesting && <Loader2 className="w-3 h-3 animate-spin text-gray-400" />}
+              {!suggesting && aiSuggestion && (
+                <span className={cn(
+                  'text-xs px-2 py-0.5 rounded-full font-medium',
+                  aiSuggestion.source === 'rule'
+                    ? 'bg-blue-50 text-blue-600'
+                    : aiSuggestion.source === 'keyword'
+                      ? 'bg-amber-50 text-amber-600'
+                      : 'bg-purple-50 text-purple-600'
+                )}>
+                  {aiSuggestion.source === 'rule' ? '✓ Regra' : aiSuggestion.source === 'keyword' ? '🔍 Sugestão' : '✨ IA'}
+                </span>
+              )}
+            </div>
+            <Controller
+              name="category_id"
+              control={control}
+              render={({ field }) => (
+                <CategorySelect
+                  categories={filteredCategories}
+                  value={field.value ?? ''}
+                  onChange={(val) => {
+                    field.onChange(val)
+                    if (aiSuggestion && val !== aiSuggestion.category_id) setAiSuggestion(null)
+                  }}
+                />
+              )}
+            />
+          </div>
+        )}
 
         {/* Notes */}
         <div>

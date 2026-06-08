@@ -17,6 +17,7 @@ export interface CategorySpending {
   icon: string | null
   color: string | null
   amount: number
+  children?: Array<{ category_id: string; name: string; icon: string | null; color: string | null; amount: number }>
 }
 
 export interface MonthlyPoint {
@@ -76,6 +77,86 @@ export async function getMonthlySummary(month: number, year: number): Promise<Mo
   return { income, expenses, balance: income - expenses }
 }
 
+type RawCat = { id: string; name: string; icon: string | null; color: string | null; parent_id: string | null }
+
+async function groupByParent(
+  supabase: Awaited<ReturnType<typeof import('@/lib/supabase/server').createClient>>,
+  data: Array<{ amount: number; category: RawCat | null }>,
+): Promise<CategorySpending[]> {
+  // Collect parent IDs that we need to look up
+  const parentIds = new Set<string>()
+  for (const tx of data) {
+    if (tx.category?.parent_id) parentIds.add(tx.category.parent_id)
+  }
+
+  const parentMap = new Map<string, RawCat>()
+  if (parentIds.size > 0) {
+    const { data: parents } = await supabase
+      .from('categories')
+      .select('id, name, icon, color, parent_id')
+      .in('id', Array.from(parentIds))
+    for (const p of (parents ?? []) as RawCat[]) parentMap.set(p.id, p)
+  }
+
+  // Two-pass aggregation: sub-level and parent-level
+  type SubEntry = { category_id: string; name: string; icon: string | null; color: string | null; amount: number }
+  const parentAgg = new Map<string, CategorySpending>()
+  const subAgg = new Map<string, SubEntry>()
+
+  for (const tx of data) {
+    const cat = tx.category
+    const parent = cat?.parent_id ? parentMap.get(cat.parent_id) : null
+    const effectiveCat = parent ?? cat
+
+    const key = effectiveCat?.id ?? '__none__'
+    const parentEntry = parentAgg.get(key)
+    if (parentEntry) {
+      parentEntry.amount += tx.amount
+    } else {
+      parentAgg.set(key, {
+        category_id: effectiveCat?.id ?? '',
+        name: effectiveCat?.name ?? 'Sem categoria',
+        icon: effectiveCat?.icon ?? null,
+        color: effectiveCat?.color ?? '#94a3b8',
+        amount: tx.amount,
+        children: [],
+      })
+    }
+
+    // Track subcategory contribution only when different from effective
+    if (cat && parent && cat.id !== parent.id) {
+      const subKey = `${key}__${cat.id}`
+      const sub = subAgg.get(subKey)
+      if (sub) {
+        sub.amount += tx.amount
+      } else {
+        subAgg.set(subKey, {
+          category_id: cat.id,
+          name: cat.name,
+          icon: cat.icon,
+          color: cat.color,
+          amount: tx.amount,
+        })
+      }
+    }
+  }
+
+  // Attach children to parents
+  for (const [subKey, sub] of Array.from(subAgg)) {
+    const parentKey = subKey.split('__')[0]
+    const parent = parentAgg.get(parentKey)
+    if (parent) parent.children!.push(sub)
+  }
+
+  // Sort children
+  for (const entry of Array.from(parentAgg.values())) {
+    entry.children!.sort((a: SubEntry, b: SubEntry) => b.amount - a.amount)
+    if (entry.children!.length === 0) delete entry.children
+  }
+
+  return Array.from(parentAgg.values()).sort((a: CategorySpending, b: CategorySpending) => b.amount - a.amount)
+}
+
 export async function getExpensesByCategory(month: number, year: number): Promise<CategorySpending[]> {
   const supabase = await createClient()
 
@@ -83,12 +164,11 @@ export async function getExpensesByCategory(month: number, year: number): Promis
   if (!user) return []
 
   const entityId = await getActiveEntityId(supabase, user.id)
-
   const { from, to } = monthRange(month, year)
 
   let query = supabase
     .from('transactions')
-    .select('amount, category:categories(id, name, icon, color)')
+    .select('amount, category:categories(id, name, icon, color, parent_id)')
     .eq('user_id', user.id)
     .eq('type', 'expense')
     .gte('date', from)
@@ -97,32 +177,9 @@ export async function getExpensesByCategory(month: number, year: number): Promis
   if (entityId) query = query.eq('entity_id', entityId)
 
   const { data } = await query
-
   if (!data) return []
 
-  const map = new Map<string, CategorySpending>()
-
-  for (const tx of data as unknown as Array<{
-    amount: number
-    category: { id: string; name: string; icon: string | null; color: string | null } | null
-  }>) {
-    const cat = tx.category
-    const key = cat?.id ?? '__none__'
-    const existing = map.get(key)
-    if (existing) {
-      existing.amount += tx.amount
-    } else {
-      map.set(key, {
-        category_id: cat?.id ?? '',
-        name: cat?.name ?? 'Sem categoria',
-        icon: cat?.icon ?? null,
-        color: cat?.color ?? '#94a3b8',
-        amount: tx.amount,
-      })
-    }
-  }
-
-  return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+  return groupByParent(supabase, data as unknown as Array<{ amount: number; category: RawCat | null }>)
 }
 
 export async function getIncomeByCategory(month: number, year: number): Promise<CategorySpending[]> {
@@ -131,12 +188,11 @@ export async function getIncomeByCategory(month: number, year: number): Promise<
   if (!user) return []
 
   const entityId = await getActiveEntityId(supabase, user.id)
-
   const { from, to } = monthRange(month, year)
 
   let query = supabase
     .from('transactions')
-    .select('amount, category:categories(id, name, icon, color)')
+    .select('amount, category:categories(id, name, icon, color, parent_id)')
     .eq('user_id', user.id)
     .eq('type', 'income')
     .gte('date', from)
@@ -145,32 +201,9 @@ export async function getIncomeByCategory(month: number, year: number): Promise<
   if (entityId) query = query.eq('entity_id', entityId)
 
   const { data } = await query
-
   if (!data) return []
 
-  const map = new Map<string, CategorySpending>()
-
-  for (const tx of data as unknown as Array<{
-    amount: number
-    category: { id: string; name: string; icon: string | null; color: string | null } | null
-  }>) {
-    const cat = tx.category
-    const key = cat?.id ?? '__none__'
-    const existing = map.get(key)
-    if (existing) {
-      existing.amount += tx.amount
-    } else {
-      map.set(key, {
-        category_id: cat?.id ?? '',
-        name: cat?.name ?? 'Sem categoria',
-        icon: cat?.icon ?? null,
-        color: cat?.color ?? '#94a3b8',
-        amount: tx.amount,
-      })
-    }
-  }
-
-  return Array.from(map.values()).sort((a, b) => b.amount - a.amount)
+  return groupByParent(supabase, data as unknown as Array<{ amount: number; category: RawCat | null }>)
 }
 
 export async function getMonthlyOverview(): Promise<MonthlyPoint[]> {

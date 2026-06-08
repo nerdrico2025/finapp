@@ -34,11 +34,12 @@ const categorySchema = z.object({
 
 type CategoryFormRaw = z.infer<typeof categorySchema>
 
-export type CategoryFormValues = CategoryFormRaw
+export type CategoryFormValues = CategoryFormRaw & { parent_id?: string | null }
 
 interface CategoryFormProps {
   defaultValues?: Partial<Category>
   fixedType?: 'income' | 'expense'
+  parentId?: string | null
   showDREGroup?: boolean
   onSubmit: (data: CategoryFormValues) => Promise<{ error: string | null }>
   onCancel: () => void
@@ -48,6 +49,7 @@ interface CategoryFormProps {
 export function CategoryForm({
   defaultValues,
   fixedType,
+  parentId,
   showDREGroup = false,
   onSubmit,
   onCancel,
@@ -82,7 +84,7 @@ export function CategoryForm({
 
   async function handleFormSubmit(data: CategoryFormRaw) {
     setServerError(null)
-    const result = await onSubmit(data)
+    const result = await onSubmit({ ...data, parent_id: parentId ?? null })
     if (result.error) setServerError(result.error)
   }
 
