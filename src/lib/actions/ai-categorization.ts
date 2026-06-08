@@ -301,14 +301,10 @@ export async function suggestCategory(
     // ── PASSO 2: palavras-chave + DeepSeek (precisam das categorias do usuário) ─
     let catOptions = categories ?? []
     if (catOptions.length === 0) {
-      const filter = entityId
-        ? `and(user_id.eq.${user.id},entity_id.eq.${entityId}),is_default.eq.true`
-        : `and(user_id.eq.${user.id},entity_id.is.null),is_default.eq.true`
-
+      // RLS já filtra pelo usuário autenticado — não precisa de filtro manual
       const { data } = await supabase
         .from('categories')
         .select('id, name, type, icon, parent_id')
-        .or(filter)
         .order('name')
       catOptions = (data ?? []) as CategoryOption[]
     }

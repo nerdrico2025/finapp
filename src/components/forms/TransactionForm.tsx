@@ -103,7 +103,7 @@ export function TransactionForm({
     if (!desc.trim() || type === 'transfer') return
     setSuggesting(true)
     try {
-      const s = await suggestCategory(desc, null)
+      const s = await suggestCategory(desc, null, undefined, filteredCategories as Parameters<typeof suggestCategory>[3])
       if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
         const current = watch('category_id')
         if (!current) {
