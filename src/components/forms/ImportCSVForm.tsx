@@ -84,17 +84,16 @@ function suggestCategoryId(description: string, categories: Category[]): string 
 
 // ─── Parsed → Editable conversion ────────────────────────────────────────────
 
-function parsedToEditable(parsed: ParsedRow[], categories: Category[]): EditableRow[] {
+function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
   return parsed.map(r => {
     const isBalanceRow = BALANCE_ROW_RE.test(r.description ?? '')
-    const categoryId = r.error || isBalanceRow ? null : suggestCategoryId(r.description, categories)
     return {
       date: r.date,
       description: r.description,
       amount: r.amount,
       type: r.type as 'income' | 'expense',
-      categoryId,
-      source: categoryId ? 'manual' : null,
+      categoryId: null,
+      source: null,
       checked: !r.error && !isBalanceRow,
       error: r.error,
       raw: r.raw ?? '',
@@ -324,6 +323,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [colMap, setColMap] = useState<ColumnMapping>({ dateIdx: -1, descIdx: -1, desc2Idx: -1, amountIdx: -1, creditIdx: -1, debitIdx: -1 })
   const [selectedAccount, setSelectedAccount] = useState(accounts[0]?.id ?? '')
   const [importing, setImporting] = useState(false)
+  const [suggestingAi, setSuggestingAi] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
   const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
@@ -389,7 +389,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
         setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
         if (isMappingValid(detected)) {
-          const parsed = parsedToEditable(applyMapping(headers, normalizedRaw, detected), cats)
+          const parsed = parsedToEditable(applyMapping(headers, normalizedRaw, detected))
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
@@ -427,7 +427,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
         if (isMappingValid(detected)) {
-          const parsed = parsedToEditable(applyMapping(headers, raw, detected), cats)
+          const parsed = parsedToEditable(applyMapping(headers, raw, detected))
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
@@ -441,7 +441,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const text = await file.text()
         const rawParsed = parseOFX(text)
         if (!rawParsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-        const parsed = parsedToEditable(rawParsed, cats)
+        const parsed = parsedToEditable(rawParsed)
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
@@ -455,7 +455,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setParseError(rawParsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
           setStep('idle'); return
         }
-        const parsed = parsedToEditable(rawParsed, cats)
+        const parsed = parsedToEditable(rawParsed)
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
@@ -467,7 +467,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   }
 
   function applyManualMapping() {
-    const parsed = parsedToEditable(applyMapping(rawHeaders, rawRows, colMap), catsRef.current)
+    const parsed = parsedToEditable(applyMapping(rawHeaders, rawRows, colMap))
     setEditableRows(parsed)
     setStep('preview')
     runAiSuggestions(parsed)
@@ -483,28 +483,34 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   async function runAiSuggestions(rows: EditableRow[]) {
     const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && r.checked)
-    const BATCH = 5
-    for (let b = 0; b < toSuggest.length; b += BATCH) {
-      const batch = toSuggest.slice(b, b + BATCH)
-      const results = await Promise.all(
-        batch.map(({ i: idx, r }) =>
-          suggestCategory(r.description, null).then(s => ({ idx, s })).catch(() => null)
+    if (toSuggest.length === 0) return
+    setSuggestingAi(true)
+    try {
+      const cats = catsRef.current as Parameters<typeof suggestCategory>[3]
+      const BATCH = 5
+      for (let b = 0; b < toSuggest.length; b += BATCH) {
+        const batch = toSuggest.slice(b, b + BATCH)
+        const results = await Promise.all(
+          batch.map(({ i: idx, r }) =>
+            suggestCategory(r.description, null, undefined, cats).then(s => ({ idx, s })).catch(() => null)
+          )
         )
-      )
-      setEditableRows(prev => {
-        const next = [...prev]
-        for (const item of results) {
-          if (!item) continue
-          const { idx, s } = item
-          if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
-            // Only override if no category was already set, or if this is a high-confidence rule
-            if (!next[idx].categoryId || (s.source === 'rule' && next[idx].source === 'manual')) {
-              next[idx] = { ...next[idx], categoryId: s.category_id, source: s.source }
+        setEditableRows(prev => {
+          const next = [...prev]
+          for (const item of results) {
+            if (!item) continue
+            const { idx, s } = item
+            if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
+              if (!next[idx].categoryId || next[idx].source !== 'manual') {
+                next[idx] = { ...next[idx], categoryId: s.category_id, source: s.source }
+              }
             }
           }
-        }
-        return next
-      })
+          return next
+        })
+      }
+    } finally {
+      setSuggestingAi(false)
     }
   }
 
@@ -790,7 +796,12 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                     </th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Data</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Descrição</th>
-                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Categoria</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">
+                      <span className="flex items-center gap-1.5">
+                        Categoria
+                        {suggestingAi && <Loader2 className="w-3 h-3 animate-spin text-amber-500" />}
+                      </span>
+                    </th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Fonte</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Tipo</th>
                     <th className="text-right px-2 py-2 text-gray-500 font-medium">Valor</th>
