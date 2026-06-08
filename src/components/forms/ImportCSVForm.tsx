@@ -861,7 +861,9 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         {suggestingAi && !row.categoryId && !row.error ? (
                           <div className="h-4 w-28 bg-amber-100 rounded animate-pulse" />
                         ) : (() => {
-                          const { parents, childrenByParent } = buildCategoryTree(allCategories)
+                          const { parents, childrenByParent } = buildCategoryTree(
+                            allCategories.filter(c => c.type === row.type)
+                          )
                           return (
                             <select
                               value={row.categoryId ?? ''}
@@ -919,6 +921,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           onClick={() => updateRow(i, {
                             type: row.type === 'income' ? 'expense' : 'income',
                             amount: -row.amount,
+                            categoryId: null,
+                            source: null,
                           })}
                           disabled={!!row.error}
                           className={cn(
