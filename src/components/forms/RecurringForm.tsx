@@ -71,7 +71,7 @@ export function RecurringForm({
   const [serverError, setServerError] = useState<string | null>(null)
   const [removeExistingAlert, setRemoveExistingAlert] = useState(false)
   const [aiSuggestion, setAiSuggestion] = useState<{
-    source: 'rule' | 'ai'
+    source: 'rule' | 'ai' | 'keyword'
     category_name: string
     category_id: string
   } | null>(null)
@@ -271,9 +271,11 @@ export function RecurringForm({
               'text-xs px-2 py-0.5 rounded-full font-medium',
               aiSuggestion.source === 'rule'
                 ? 'bg-blue-50 text-blue-600'
-                : 'bg-purple-50 text-purple-600'
+                : aiSuggestion.source === 'keyword'
+                  ? 'bg-amber-50 text-amber-600'
+                  : 'bg-purple-50 text-purple-600'
             )}>
-              {aiSuggestion.source === 'rule' ? '✓ Regra' : '✨ Sugerido por IA'}
+              {aiSuggestion.source === 'rule' ? '✓ Regra' : aiSuggestion.source === 'keyword' ? '🔍 Sugestão' : '✨ IA'}
             </span>
           )}
         </div>
