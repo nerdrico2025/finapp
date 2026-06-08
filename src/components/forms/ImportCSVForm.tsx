@@ -30,7 +30,7 @@ interface EditableRow {
   amount: number        // signed: negative = expense, positive = income
   type: 'income' | 'expense'
   categoryId: string | null
-  source: 'rule' | 'ai' | 'manual' | null
+  source: 'rule' | 'ai' | 'keyword' | 'manual' | null
   checked: boolean
   error?: string
   raw: string
@@ -876,6 +876,11 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         {row.source === 'ai' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 text-[10px] font-medium whitespace-nowrap">
                             IA
+                          </span>
+                        )}
+                        {row.source === 'keyword' && (
+                          <span className="inline-block px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 text-[10px] font-medium whitespace-nowrap">
+                            Sugestão
                           </span>
                         )}
                         {row.source === 'manual' && (
