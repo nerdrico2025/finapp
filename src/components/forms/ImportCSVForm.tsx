@@ -772,6 +772,16 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             </button>
           </div>
 
+          {suggestingAi && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg bg-amber-50 border border-amber-200 px-4 py-3">
+              <Loader2 className="w-5 h-5 animate-spin text-amber-500 shrink-0" />
+              <div>
+                <p className="text-sm font-semibold text-amber-800">IA categorizando automaticamente…</p>
+                <p className="text-xs text-amber-600 mt-0.5">Analisando descrições e sugerindo categorias para cada transação</p>
+              </div>
+            </div>
+          )}
+
           <div className="border border-gray-100 rounded-xl overflow-hidden">
             <div className="max-h-80 overflow-y-auto">
               <table className="w-full table-fixed text-xs">
@@ -848,7 +858,9 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Category */}
                       <td className="px-2 py-1.5">
-                        {(() => {
+                        {suggestingAi && !row.categoryId && !row.error ? (
+                          <div className="h-4 w-28 bg-amber-100 rounded animate-pulse" />
+                        ) : (() => {
                           const { parents, childrenByParent } = buildCategoryTree(allCategories)
                           return (
                             <select
