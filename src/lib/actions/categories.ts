@@ -175,6 +175,16 @@ export async function seedDefaultCategories(userId: string) {
 
   const entityId = await getActiveEntityId(supabase, userId)
 
+  // Idempotency guard — skip if categories already exist for this entity
+  const { data: existing } = await supabase
+    .from('categories')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('entity_id', entityId ?? '')
+    .limit(1)
+
+  if (existing && existing.length > 0) return
+
   const base = { user_id: userId, entity_id: entityId, is_default: false }
 
   // ── Expense parents ──────────────────────────────────────────────────────────
