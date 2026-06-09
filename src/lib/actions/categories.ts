@@ -197,6 +197,7 @@ export async function seedDefaultCategories(userId: string) {
     { name: 'Lazer e Entretenimento', icon: '🎬', color: '#8b5cf6' },
     { name: 'Finanças e Dívidas',     icon: '💳', color: '#6366f1' },
     { name: 'Vestuário',              icon: '👕', color: '#f59e0b' },
+    { name: 'Cuidados Pessoais',      icon: '💅', color: '#f472b6' },
     { name: 'Pets',                   icon: '🐾', color: '#f97316' },
     { name: 'Impostos e Taxas',       icon: '🏛️', color: '#64748b' },
     { name: 'Outros',                 icon: '📦', color: '#9ca3af' },
@@ -220,7 +221,7 @@ export async function seedDefaultCategories(userId: string) {
         { name: 'Condomínio',           icon: '🏢' },
         { name: 'Energia elétrica',     icon: '⚡' },
         { name: 'Água e esgoto',        icon: '💧' },
-        { name: 'Internet',             icon: '📡' },
+        { name: 'Telefonia e internet', icon: '📡' },
         { name: 'Manutenção da casa',   icon: '🔧' },
       ],
     },
@@ -302,6 +303,15 @@ export async function seedDefaultCategories(userId: string) {
         { name: 'Imposto de Renda', icon: '📄' },
         { name: 'IOF',              icon: '💸' },
         { name: 'Outras taxas',     icon: '📋' },
+      ],
+    },
+    {
+      parent: 'Cuidados Pessoais', color: '#f472b6',
+      subs: [
+        { name: 'Salão e estética',       icon: '💇' },
+        { name: 'Farmácia e higiene',     icon: '🧴' },
+        { name: 'Academia e saúde',       icon: '🏋️' },
+        { name: 'Vestuário e acessórios', icon: '👗' },
       ],
     },
   ]

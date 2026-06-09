@@ -519,9 +519,10 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     const rowIdx = newCat.rowIdx
     const name = newCat.name.trim()
     const color = newCat.color
+    const rowType = editableRows[rowIdx]?.type ?? 'expense'
     setNewCat(c => c ? { ...c, saving: true } : c)
 
-    const result = await createCategory({ name, type: 'expense', icon: '📦', color })
+    const result = await createCategory({ name, type: rowType, icon: '📦', color })
     console.log('[ImportCSVForm] createCategory result:', JSON.stringify(result))
     if (result.error || !result.data) {
       console.log('[ImportCSVForm] Falhou — error:', result.error, '| data:', result.data)
