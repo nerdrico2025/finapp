@@ -328,6 +328,7 @@ export async function seedDefaultCategories(userId: string) {
     { name: 'Rendimentos de investimentos', icon: '📈' },
     { name: 'Reembolsos',                   icon: '↩️' },
     { name: 'Outros recebimentos',          icon: '💰' },
+    { name: 'Outros rendimentos',           icon: '💵' },
   ].map(s => ({ ...base, ...s, color: '#10b981', type: 'income' as CategoryType, parent_id: receitasId })) : []
 
   if (subRows.length > 0 || incomeSubs.length > 0) {
