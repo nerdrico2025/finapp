@@ -189,16 +189,17 @@ export async function seedDefaultCategories(userId: string) {
 
   // ── Expense parents ──────────────────────────────────────────────────────────
   const expenseParents = [
-    { name: 'Moradia',              icon: '🏠', color: '#8b5cf6' },
-    { name: 'Alimentação',          icon: '🍽️', color: '#ef4444' },
-    { name: 'Saúde',                icon: '💊', color: '#ec4899' },
-    { name: 'Educação',             icon: '📚', color: '#14b8a6' },
-    { name: 'Lazer e Entretenimento', icon: '🎬', color: '#3b82f6' },
-    { name: 'Finanças e Dívidas',   icon: '💳', color: '#6366f1' },
-    { name: 'Vestuário',            icon: '👕', color: '#f59e0b' },
-    { name: 'Pets',                 icon: '🐾', color: '#f97316' },
-    { name: 'Impostos e Taxas',     icon: '📋', color: '#64748b' },
-    { name: 'Outros',               icon: '📦', color: '#9ca3af' },
+    { name: 'Moradia',                icon: '🏠', color: '#8b5cf6' },
+    { name: 'Alimentação',            icon: '🍽️', color: '#ef4444' },
+    { name: 'Saúde',                  icon: '💊', color: '#ec4899' },
+    { name: 'Educação',               icon: '📚', color: '#14b8a6' },
+    { name: 'Transporte',             icon: '🚗', color: '#3b82f6' },
+    { name: 'Lazer e Entretenimento', icon: '🎬', color: '#8b5cf6' },
+    { name: 'Finanças e Dívidas',     icon: '💳', color: '#6366f1' },
+    { name: 'Vestuário',              icon: '👕', color: '#f59e0b' },
+    { name: 'Pets',                   icon: '🐾', color: '#f97316' },
+    { name: 'Impostos e Taxas',       icon: '🏛️', color: '#64748b' },
+    { name: 'Outros',                 icon: '📦', color: '#9ca3af' },
   ] as const
 
   const { data: insertedParents } = await supabase
@@ -215,12 +216,21 @@ export async function seedDefaultCategories(userId: string) {
     {
       parent: 'Moradia', color: '#8b5cf6',
       subs: [
-        { name: 'Aluguel',            icon: '🏠' },
-        { name: 'Condomínio',         icon: '🏢' },
-        { name: 'Energia elétrica',   icon: '⚡' },
-        { name: 'Água e esgoto',      icon: '💧' },
-        { name: 'Internet',           icon: '📡' },
-        { name: 'IPVA e seguro auto', icon: '🚗' },
+        { name: 'Aluguel',              icon: '🏠' },
+        { name: 'Condomínio',           icon: '🏢' },
+        { name: 'Energia elétrica',     icon: '⚡' },
+        { name: 'Água e esgoto',        icon: '💧' },
+        { name: 'Internet',             icon: '📡' },
+        { name: 'Manutenção da casa',   icon: '🔧' },
+      ],
+    },
+    {
+      parent: 'Transporte', color: '#3b82f6',
+      subs: [
+        { name: 'Combustível',              icon: '⛽' },
+        { name: 'Estacionamento e pedágio', icon: '🅿️' },
+        { name: 'Manutenção do veículo',    icon: '🔧' },
+        { name: 'IPVA e seguro auto',       icon: '📋' },
       ],
     },
     {
@@ -288,7 +298,9 @@ export async function seedDefaultCategories(userId: string) {
     {
       parent: 'Impostos e Taxas', color: '#64748b',
       subs: [
+        { name: 'IPTU',             icon: '🏘️' },
         { name: 'Imposto de Renda', icon: '📄' },
+        { name: 'IOF',              icon: '💸' },
         { name: 'Outras taxas',     icon: '📋' },
       ],
     },
