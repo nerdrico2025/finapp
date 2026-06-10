@@ -3,6 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
+import { getUserPlanLimits } from '@/lib/plan'
 import type { AccountType } from '@/types'
 
 export interface AccountFormData {
@@ -68,7 +69,7 @@ export async function getTotalBalance() {
   return { total, error: null }
 }
 
-export async function createAccount(formData: AccountFormData) {
+export async function createAccount(formData: AccountFormData): Promise<{ error: string | null; feature?: string; message?: string }> {
   const supabase = await createClient()
 
   const {
@@ -76,6 +77,22 @@ export async function createAccount(formData: AccountFormData) {
   } = await supabase.auth.getUser()
 
   if (!user) return { error: 'Não autenticado' }
+
+  const limits = await getUserPlanLimits(user.id)
+  if (limits.maxAccounts !== null) {
+    const { count } = await supabase
+      .from('accounts')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .eq('is_active', true)
+    if ((count ?? 0) >= limits.maxAccounts) {
+      return {
+        error: 'LIMIT_REACHED',
+        feature: 'accounts',
+        message: 'Você atingiu o limite de 2 contas do plano gratuito.',
+      }
+    }
+  }
 
   const entityId = await getActiveEntityId(supabase, user.id)
 

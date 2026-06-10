@@ -26,6 +26,13 @@ export interface Database {
           google_access_token: string | null
           google_refresh_token: string | null
           google_token_expiry: string | null
+          plan_type: 'free' | 'pro_pf' | 'pro_pj'
+          plan_pf_active: boolean
+          plan_pj_active: boolean
+          stripe_customer_id: string | null
+          subscription_id: string | null
+          subscription_status: string | null
+          current_period_end: string | null
         }
         Insert: {
           id: string
@@ -41,6 +48,13 @@ export interface Database {
           google_access_token?: string | null
           google_refresh_token?: string | null
           google_token_expiry?: string | null
+          plan_type?: 'free' | 'pro_pf' | 'pro_pj'
+          plan_pf_active?: boolean
+          plan_pj_active?: boolean
+          stripe_customer_id?: string | null
+          subscription_id?: string | null
+          subscription_status?: string | null
+          current_period_end?: string | null
         }
         Update: {
           email?: string
@@ -54,6 +68,13 @@ export interface Database {
           google_access_token?: string | null
           google_refresh_token?: string | null
           google_token_expiry?: string | null
+          plan_type?: 'free' | 'pro_pf' | 'pro_pj'
+          plan_pf_active?: boolean
+          plan_pj_active?: boolean
+          stripe_customer_id?: string | null
+          subscription_id?: string | null
+          subscription_status?: string | null
+          current_period_end?: string | null
         }
         Relationships: never[]
       }
@@ -543,6 +564,28 @@ export interface Database {
           premium?: number | null
           option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
           updated_at?: string
+        }
+        Relationships: never[]
+      }
+      stripe_events: {
+        Row: {
+          id: string
+          stripe_event_id: string
+          type: string
+          payload: Json
+          processed_at: string
+        }
+        Insert: {
+          id?: string
+          stripe_event_id: string
+          type: string
+          payload: Json
+          processed_at?: string
+        }
+        Update: {
+          type?: string
+          payload?: Json
+          processed_at?: string
         }
         Relationships: never[]
       }

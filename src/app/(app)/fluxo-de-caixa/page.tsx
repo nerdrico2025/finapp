@@ -8,6 +8,7 @@ import { getActiveEntityId } from '@/lib/entity'
 import { getFluxoDeCaixa } from '@/lib/actions/fluxoDeCaixa'
 import { MonthNavigator } from '@/components/ui/MonthNavigator'
 import { FluxoDeCaixaClient } from './FluxoDeCaixaClient'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 
@@ -51,6 +52,7 @@ export default async function FluxoDeCaixaPage({
   const data = await getFluxoDeCaixa(entityId!, month, year)
 
   return (
+    <UpgradeGate feature="canAccessPJ">
     <div className="space-y-6">
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -110,6 +112,7 @@ export default async function FluxoDeCaixaPage({
         weeklyGroups={data.weeklyGroups}
       />
     </div>
+    </UpgradeGate>
   )
 }
 

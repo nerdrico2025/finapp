@@ -17,6 +17,7 @@ import { CategoryDonutChart } from '@/components/charts/CategoryDonutChart'
 import { cn } from '@/lib/utils/cn'
 import { updateInvestmentBalance } from '@/lib/actions/investments'
 import { TradeOperations } from './TradeOperations'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import type { Account, Category, TradeOperation } from '@/types'
 import type { InvestmentData, HistoryPoint } from '@/lib/actions/investments'
 
@@ -450,7 +451,11 @@ export function InvestmentsClient({ investmentData, allAccounts, categories, his
       {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} />}
 
       {/* Simulator Tab */}
-      {activeTab === 'simulator' && <InvestmentSimulator />}
+      {activeTab === 'simulator' && (
+        <UpgradeGate feature="canAccessSimulator">
+          <InvestmentSimulator />
+        </UpgradeGate>
+      )}
 
       {/* Import Modal */}
       {importOpen && (

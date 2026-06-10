@@ -50,6 +50,29 @@ export async function register(formData: FormData) {
   redirect('/dashboard')
 }
 
+export async function signUp(formData: FormData) {
+  const supabase = await createClient()
+
+  const fullName = formData.get('full_name') as string
+  const email = formData.get('email') as string
+  const password = formData.get('password') as string
+
+  const { data, error } = await supabase.auth.signUp({
+    email,
+    password,
+    options: { data: { full_name: fullName } },
+  })
+
+  if (error) {
+    return { error: getAuthErrorMessage(error.message) }
+  }
+
+  const requiresConfirmation =
+    !data.session || (data.user?.identities?.length === 0)
+
+  return { success: true, requiresConfirmation }
+}
+
 export async function logout() {
   const supabase = await createClient()
   await supabase.auth.signOut()

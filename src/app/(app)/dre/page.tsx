@@ -8,6 +8,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { getDRE } from '@/lib/actions/dre'
 import { DREClient } from './DREClient'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 
@@ -61,6 +62,7 @@ export default async function DREPage({
   const isCurrentYear = year === now.getFullYear()
 
   return (
+    <UpgradeGate feature="canAccessPJ">
     <div className="space-y-6">
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -166,6 +168,7 @@ export default async function DREPage({
       {/* ── DRE Table ─────────────────────────────────────────────────────── */}
       <DREClient data={data} />
     </div>
+    </UpgradeGate>
   )
 }
 

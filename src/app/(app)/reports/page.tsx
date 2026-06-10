@@ -13,6 +13,7 @@ import { ExpensesByCategoryChart } from '@/components/charts/ExpensesByCategoryC
 import { MonthlyOverviewChart } from '@/components/charts/MonthlyOverviewChart'
 import { MonthNavigator } from '@/components/ui/MonthNavigator'
 import { ExpenseCategoryTable, IncomeCategoryTable } from './CategoryTable'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 
@@ -50,6 +51,7 @@ export default async function ReportsPage({
   const budgetMap = new Map((budgets ?? []).map((b) => [b.category_id, b]))
 
   return (
+    <UpgradeGate feature="canAccessReports">
     <div className="space-y-6">
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between gap-4 flex-wrap">
@@ -129,6 +131,7 @@ export default async function ReportsPage({
         <IncomeCategoryTable data={incomeByCategory} total={totalIncome} />
       </div>
     </div>
+    </UpgradeGate>
   )
 }
 

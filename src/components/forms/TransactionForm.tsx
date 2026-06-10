@@ -10,6 +10,7 @@ import { createTransaction, createTransfer, updateTransaction } from '@/lib/acti
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import { CategorySelect } from '@/components/ui/CategorySelect'
+import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import type { Account, Category } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
 
@@ -53,6 +54,7 @@ export function TransactionForm({
 }: TransactionFormProps) {
   const isEditing = !!transactionId
   const [serverError, setServerError] = useState<string | null>(null)
+  const [upgradePrompt, setUpgradePrompt] = useState<{ feature: string; message: string } | null>(null)
   const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
   const [pendingData, setPendingData] = useState<TransactionFormRaw | null>(null)
   const [aiSuggestion, setAiSuggestion] = useState<{
@@ -166,6 +168,11 @@ export function TransactionForm({
 
     const result = await createTransaction({ ...payload, force })
 
+    if (result.error === 'LIMIT_REACHED') {
+      setUpgradePrompt({ feature: result.feature!, message: result.message! })
+      return
+    }
+
     if (result.duplicate) {
       setPendingData(data)
       setDuplicate({ existingId: result.existingId })
@@ -196,6 +203,14 @@ export function TransactionForm({
   return (
     <>
       <form onSubmit={handleSubmit(handleFormSubmit)} className="space-y-4">
+        {upgradePrompt && (
+          <UpgradePrompt
+            feature={upgradePrompt.feature as 'transactions'}
+            message={upgradePrompt.message}
+            onClose={() => setUpgradePrompt(null)}
+          />
+        )}
+
         {serverError && (
           <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
             <p className="text-sm text-red-700">{serverError}</p>

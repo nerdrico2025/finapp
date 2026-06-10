@@ -2,6 +2,13 @@ import { createServerClient } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
 
 export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // Bypass auth entirely for external webhook calls — they have no user session
+  if (pathname.startsWith('/api/webhooks/')) {
+    return NextResponse.next({ request })
+  }
+
   let supabaseResponse = NextResponse.next({ request })
 
   const supabase = createServerClient(
@@ -27,32 +34,17 @@ export async function middleware(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser()
 
-  const { pathname } = request.nextUrl
+  const PUBLIC_ROUTES = ['/', '/pricing', '/login', '/signup', '/register']
+  const isPublicRoute = PUBLIC_ROUTES.includes(pathname) || pathname.startsWith('/api/')
 
-  const isAppRoute =
-    pathname.startsWith('/dashboard') ||
-    pathname.startsWith('/transactions') ||
-    pathname.startsWith('/accounts') ||
-    pathname.startsWith('/categories') ||
-    pathname.startsWith('/budgets') ||
-    pathname.startsWith('/goals') ||
-    pathname.startsWith('/alerts') ||
-    pathname.startsWith('/reports') ||
-    pathname.startsWith('/investments') ||
-    pathname.startsWith('/lista-de-sonhos') ||
-    pathname.startsWith('/fluxo-de-caixa') ||
-    pathname.startsWith('/dre') ||
-    pathname.startsWith('/consolidado') ||
-    pathname.startsWith('/settings') ||
-    pathname.startsWith('/admin')
-
-  const isAuthRoute = pathname === '/login' || pathname === '/register'
-
-  if (isAppRoute && !user) {
+  if (!isPublicRoute && !user) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     return NextResponse.redirect(url)
   }
+
+  const isAuthRoute =
+    pathname === '/login' || pathname === '/signup' || pathname === '/register'
 
   if (isAuthRoute && user) {
     const url = request.nextUrl.clone()

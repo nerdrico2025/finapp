@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'crypto'
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
+import { getUserPlanLimits } from '@/lib/plan'
 import type { TransactionType, TransactionStatus } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -75,6 +76,22 @@ function generateImportHash(userId: string, amount: number, date: string, descri
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
+export async function getMonthlyTransactionCount(): Promise<number> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return 0
+  const now = new Date()
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
+  const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().split('T')[0]
+  const { count } = await supabase
+    .from('transactions')
+    .select('*', { count: 'exact', head: true })
+    .eq('user_id', user.id)
+    .gte('date', monthStart)
+    .lt('date', nextMonth)
+  return count ?? 0
+}
+
 export async function getTransactions(filters: TransactionFilters = {}) {
   const supabase = await createClient()
 
@@ -128,7 +145,7 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 
 export async function createTransaction(
   formData: TransactionFormData
-): Promise<{ error: string | null; duplicate?: boolean; existingId?: string }> {
+): Promise<{ error: string | null; duplicate?: boolean; existingId?: string; feature?: string; message?: string }> {
   const supabase = await createClient()
 
   const {
@@ -136,6 +153,26 @@ export async function createTransaction(
   } = await supabase.auth.getUser()
 
   if (!user) return { error: 'Não autenticado' }
+
+  const limits = await getUserPlanLimits(user.id)
+  if (limits.maxTransactionsPerMonth !== null) {
+    const now = new Date()
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().split('T')[0]
+    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1).toISOString().split('T')[0]
+    const { count } = await supabase
+      .from('transactions')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', user.id)
+      .gte('date', monthStart)
+      .lt('date', nextMonth)
+    if ((count ?? 0) >= limits.maxTransactionsPerMonth) {
+      return {
+        error: 'LIMIT_REACHED',
+        feature: 'transactions',
+        message: 'Você atingiu o limite de 30 transações do plano gratuito.',
+      }
+    }
+  }
 
   const entityId = await getActiveEntityId(supabase, user.id)
 

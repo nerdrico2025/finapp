@@ -11,6 +11,7 @@ import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { deleteTransaction } from '@/lib/actions/transactions'
 import { TransactionForm } from '@/components/forms/TransactionForm'
 import { ImportCSVForm } from '@/components/forms/ImportCSVForm'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category, TransactionType } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
@@ -117,13 +118,27 @@ export function TransactionsClient({
             </p>
           </div>
           <div className="flex gap-2">
-            <button
-              onClick={() => setModal('import')}
-              className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+            <UpgradeGate
+              feature="canImport"
+              fallback={
+                <button
+                  disabled
+                  className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-400 text-sm font-medium rounded-lg cursor-not-allowed opacity-60"
+                  title="Disponível no plano Pro"
+                >
+                  <Upload className="w-4 h-4" />
+                  Importar
+                </button>
+              }
             >
-              <Upload className="w-4 h-4" />
-              Importar
-            </button>
+              <button
+                onClick={() => setModal('import')}
+                className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+              >
+                <Upload className="w-4 h-4" />
+                Importar
+              </button>
+            </UpgradeGate>
             <button
               onClick={() => setModal('create')}
               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg transition-colors"

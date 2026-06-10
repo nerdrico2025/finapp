@@ -3,6 +3,7 @@ export const metadata: Metadata = { title: 'Lista de Sonhos' }
 
 import { createClient } from '@/lib/supabase/server'
 import { DreamListClient } from './DreamListClient'
+import { UpgradeGate } from '@/components/ui/UpgradeGate'
 
 export default async function DreamListPage() {
   const supabase = await createClient()
@@ -13,5 +14,9 @@ export default async function DreamListPage() {
     .select('*, dream_items(*)')
     .order('created_at', { ascending: false })
 
-  return <DreamListClient initialLists={lists ?? []} />
+  return (
+    <UpgradeGate feature="canAccessDreamList">
+      <DreamListClient initialLists={lists ?? []} />
+    </UpgradeGate>
+  )
 }

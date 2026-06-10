@@ -17,6 +17,7 @@ import { toast } from 'sonner'
 import { formatCurrency } from '@/lib/utils/format'
 import { createAccount, updateAccount, deleteAccount } from '@/lib/actions/accounts'
 import { AccountForm, type AccountFormValues } from '@/components/forms/AccountForm'
+import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import { cn } from '@/lib/utils/cn'
 import type { Account, AccountType } from '@/types'
 import { useRouter } from 'next/navigation'
@@ -57,6 +58,7 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
   const [modal, setModal] = useState<ModalState>({ type: 'closed' })
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
+  const [upgradePrompt, setUpgradePrompt] = useState<{ feature: string; message: string } | null>(null)
   const router = useRouter()
 
   function refreshPage() {
@@ -66,6 +68,10 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
 
   async function handleCreate(data: AccountFormValues) {
     const result = await createAccount(data)
+    if (result.error === 'LIMIT_REACHED') {
+      setUpgradePrompt({ feature: result.feature!, message: result.message! })
+      return { error: null }
+    }
     if (!result.error) { toast.success('Conta criada!'); refreshPage() }
     return result
   }
@@ -142,6 +148,17 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
           </div>
         )}
       </div>
+
+      {/* Upgrade nudge (shown above any open modal) */}
+      {upgradePrompt && (
+        <div className="fixed inset-x-4 top-4 z-[60] sm:inset-x-auto sm:left-1/2 sm:-translate-x-1/2 sm:w-full sm:max-w-sm">
+          <UpgradePrompt
+            feature={upgradePrompt.feature as 'accounts'}
+            message={upgradePrompt.message}
+            onClose={() => setUpgradePrompt(null)}
+          />
+        </div>
+      )}
 
       {/* Create Modal */}
       {modal.type === 'create' && (
