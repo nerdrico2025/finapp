@@ -86,13 +86,13 @@ export default async function LandingPage() {
       {/* ── Hero ───────────────────────────────────────────────────────── */}
       <section className="py-20 md:py-28 px-4 sm:px-6">
         <div className="max-w-4xl mx-auto text-center">
-          <div className="inline-flex items-center gap-2 bg-indigo-50 text-indigo-700 text-sm font-medium px-4 py-1.5 rounded-full mb-8">
+          <div className="inline-flex items-center gap-2 bg-emerald-50 text-emerald-700 text-sm font-medium px-4 py-1.5 rounded-full mb-8">
             ✦ Grátis para sempre no plano básico
           </div>
           <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold text-gray-900 tracking-tight leading-tight mb-6">
             Controle pessoal
             <br />
-            <span className="text-indigo-600">e empresarial</span>
+            <span className="text-emerald-600">e empresarial</span>
           </h1>
           <p className="text-lg md:text-xl text-gray-600 mb-10 max-w-2xl mx-auto leading-relaxed">
             Do salário à empresa, tudo em um lugar só.
@@ -101,7 +101,7 @@ export default async function LandingPage() {
           <div className="flex flex-col sm:flex-row gap-4 justify-center">
             <Link
               href="/signup"
-              className="inline-flex items-center justify-center px-8 py-3.5 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl transition-colors text-base"
+              className="inline-flex items-center justify-center px-8 py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-colors text-base"
             >
               Começar grátis
             </Link>
@@ -144,10 +144,10 @@ export default async function LandingPage() {
             {FEATURES.map(({ Icon, title, description }) => (
               <div
                 key={title}
-                className="bg-white border border-gray-200 rounded-2xl p-5 md:p-6 hover:border-indigo-200 hover:shadow-sm transition-all"
+                className="bg-white border border-gray-200 rounded-2xl p-5 md:p-6 hover:border-emerald-200 hover:shadow-sm transition-all"
               >
-                <div className="w-10 h-10 bg-indigo-50 rounded-xl flex items-center justify-center mb-4">
-                  <Icon className="h-5 w-5 text-indigo-600" />
+                <div className="w-10 h-10 bg-emerald-50 rounded-xl flex items-center justify-center mb-4">
+                  <Icon className="h-5 w-5 text-emerald-600" />
                 </div>
                 <h3 className="font-semibold text-gray-900 mb-1.5 text-sm md:text-base">
                   {title}
@@ -195,21 +195,21 @@ export default async function LandingPage() {
             </div>
 
             {/* Pro Pessoal — destaque */}
-            <div className="bg-white border-2 border-indigo-500 rounded-2xl p-8 relative shadow-xl shadow-indigo-100">
+            <div className="bg-white border-2 border-emerald-500 rounded-2xl p-8 relative shadow-xl shadow-emerald-100">
               <div className="absolute -top-4 left-1/2 -translate-x-1/2 whitespace-nowrap">
-                <span className="bg-indigo-600 text-white text-xs font-bold px-4 py-1.5 rounded-full uppercase tracking-wide">
+                <span className="bg-emerald-600 text-white text-xs font-bold px-4 py-1.5 rounded-full uppercase tracking-wide">
                   Mais popular
                 </span>
               </div>
               <h3 className="text-xl font-bold text-gray-900 mb-1">Pro Pessoal</h3>
               <div className="flex items-baseline gap-1 mb-7">
-                <span className="text-4xl font-bold text-indigo-600">R$ 7</span>
+                <span className="text-4xl font-bold text-emerald-600">R$ 7</span>
                 <span className="text-gray-500 text-sm">/mês</span>
               </div>
               <ul className="space-y-3 mb-8">
                 {PRO_PF_FEATURES.map((f) => (
                   <li key={f} className="flex items-start gap-3 text-sm text-gray-600">
-                    <Check className="h-4 w-4 text-indigo-500 mt-0.5 flex-shrink-0" />
+                    <Check className="h-4 w-4 text-emerald-500 mt-0.5 flex-shrink-0" />
                     {f}
                   </li>
                 ))}
@@ -218,7 +218,7 @@ export default async function LandingPage() {
                 priceId={proPfPriceId}
                 planSlug="pro_pf"
                 label="Assinar Pro Pessoal"
-                className="w-full py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold rounded-xl transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-xl transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
 
@@ -241,14 +241,14 @@ export default async function LandingPage() {
                 priceId={proPjPriceId}
                 planSlug="pro_pj"
                 label="Assinar Pro Empresarial"
-                className="w-full py-3 border border-indigo-600 text-indigo-600 font-semibold rounded-xl hover:bg-indigo-50 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
+                className="w-full py-3 border border-emerald-600 text-emerald-600 font-semibold rounded-xl hover:bg-emerald-50 transition-colors text-sm disabled:opacity-60 disabled:cursor-not-allowed"
               />
             </div>
           </div>
 
           <p className="text-center text-sm text-gray-500 mt-10">
             Já tem um plano? Adicione o módulo complementar com 40% de desconto. Gerencie em{' '}
-            <Link href="/subscription" className="text-indigo-600 hover:underline font-medium">
+            <Link href="/subscription" className="text-emerald-600 hover:underline font-medium">
               /subscription
             </Link>
           </p>
@@ -273,7 +273,7 @@ export default async function LandingPage() {
           <div className="flex flex-col md:flex-row justify-between items-start gap-10 mb-10">
             <div>
               <div className="flex items-center gap-2 mb-3">
-                <TrendingUp className="h-5 w-5 text-indigo-400" />
+                <TrendingUp className="h-5 w-5 text-emerald-400" />
                 <span className="text-white font-bold text-lg">FinApp</span>
               </div>
               <p className="text-sm text-gray-500">Controle financeiro simples e poderoso.</p>
@@ -296,7 +296,7 @@ export default async function LandingPage() {
               Já é cliente?{' '}
               <Link
                 href="/login"
-                className="text-indigo-400 hover:text-indigo-300 transition-colors"
+                className="text-emerald-400 hover:text-emerald-300 transition-colors"
               >
                 Fazer login →
               </Link>

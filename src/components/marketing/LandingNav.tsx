@@ -24,7 +24,7 @@ export function LandingNav() {
         <div className="flex items-center justify-between h-16">
           {/* Logo */}
           <Link href="/" className="flex items-center gap-2 flex-shrink-0">
-            <TrendingUp className="h-5 w-5 text-indigo-600" />
+            <TrendingUp className="h-5 w-5 text-emerald-600" />
             <span className="text-lg font-bold text-gray-900">FinApp</span>
           </Link>
 
@@ -60,7 +60,7 @@ export function LandingNav() {
             </Link>
             <Link
               href="/signup"
-              className="text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors"
+              className="text-sm font-medium text-white bg-emerald-600 hover:bg-emerald-700 px-4 py-2 rounded-lg transition-colors"
             >
               Começar grátis
             </Link>
@@ -109,7 +109,7 @@ export function LandingNav() {
               </Link>
               <Link
                 href="/signup"
-                className="text-center text-sm font-medium text-white bg-indigo-600 px-4 py-2.5 rounded-xl"
+                className="text-center text-sm font-medium text-white bg-emerald-600 px-4 py-2.5 rounded-xl"
               >
                 Começar grátis
               </Link>
