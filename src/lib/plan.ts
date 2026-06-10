@@ -1,4 +1,3 @@
-import { createClient } from '@/lib/supabase/server'
 import type { Profile } from '@/types'
 
 export type PlanLimits = {
@@ -13,7 +12,7 @@ export type PlanLimits = {
   canAccessAI: boolean
 }
 
-const FREE_LIMITS: PlanLimits = {
+export const FREE_LIMITS: PlanLimits = {
   maxTransactionsPerMonth: 30,
   maxAccounts: 2,
   canImport: false,
@@ -62,20 +61,4 @@ export function getPlanLimits(profile: Profile): PlanLimits {
   }
 
   return FREE_LIMITS
-}
-
-export async function getUserPlanLimits(userId: string): Promise<PlanLimits> {
-  try {
-    const supabase = await createClient()
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('*')
-      .eq('id', userId)
-      .single()
-
-    if (!profile) return FREE_LIMITS
-    return getPlanLimits(profile)
-  } catch {
-    return FREE_LIMITS
-  }
 }

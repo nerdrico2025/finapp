@@ -3,7 +3,7 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
-import { getUserPlanLimits } from '@/lib/plan'
+import { getUserPlanLimits } from '@/lib/plan-server'
 import type { AccountType } from '@/types'
 
 export interface AccountFormData {

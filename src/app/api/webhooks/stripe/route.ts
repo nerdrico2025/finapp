@@ -3,9 +3,6 @@ import Stripe from 'stripe'
 import { stripe } from '@/lib/stripe'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-// No-op in App Router (body is never auto-parsed here), kept for documentation.
-export const config = { api: { bodyParser: false } }
-
 function getPlanUpdates(subscription: Stripe.Subscription): {
   plan_type?: 'pro_pf' | 'pro_pj'
   plan_pf_active?: boolean
