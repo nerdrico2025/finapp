@@ -32,7 +32,10 @@ function DefaultFallback() {
 }
 
 export function UpgradeGate({ feature, children, fallback }: UpgradeGateProps) {
-  const { limits, isLoading } = usePlan()
+  const { limits, isLoading, isSuperAdmin } = usePlan()
+
+  // Super admin: acesso total — o gate não existe, renderiza direto
+  if (isSuperAdmin) return <>{children}</>
 
   // Don't block while loading — avoids flash of locked content for pro users
   if (isLoading || !limits) return <>{children}</>

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { getPlanLimits } from '@/lib/plan'
+import { getPlanLimits, isSuperAdmin as checkSuperAdmin } from '@/lib/plan'
 import type { PlanLimits } from '@/lib/plan'
 import type { Profile } from '@/types'
 
@@ -14,6 +14,7 @@ interface UsePlanResult {
   isPJ: boolean
   hasPJAddon: boolean
   hasPFAddon: boolean
+  isSuperAdmin: boolean
   isLoading: boolean
 }
 
@@ -49,18 +50,22 @@ export function usePlan(): UsePlanResult {
       isPJ: false,
       hasPJAddon: false,
       hasPFAddon: false,
+      isSuperAdmin: false,
       isLoading,
     }
   }
 
+  const superAdmin = checkSuperAdmin(profile)
+
   return {
     plan: profile.plan_type,
     limits: getPlanLimits(profile),
-    isPro: profile.plan_type !== 'free',
-    isPF: profile.plan_type === 'pro_pf' || profile.plan_pj_active,
-    isPJ: profile.plan_type === 'pro_pj' || profile.plan_pf_active,
-    hasPJAddon: profile.plan_pj_active,
-    hasPFAddon: profile.plan_pf_active,
+    isPro: superAdmin || profile.plan_type !== 'free',
+    isPF: superAdmin || profile.plan_type === 'pro_pf' || profile.plan_pj_active,
+    isPJ: superAdmin || profile.plan_type === 'pro_pj' || profile.plan_pf_active,
+    hasPJAddon: superAdmin || profile.plan_pj_active,
+    hasPFAddon: superAdmin || profile.plan_pf_active,
+    isSuperAdmin: superAdmin,
     isLoading,
   }
 }

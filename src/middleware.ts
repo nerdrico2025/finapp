@@ -58,6 +58,17 @@ export async function middleware(request: NextRequest) {
   const isPjOnlyRoute = pathname.startsWith('/fluxo-de-caixa') || pathname.startsWith('/dre')
 
   if (isPjOnlyRoute && user) {
+    // Super admin (profiles.role === 'admin') nunca é bloqueado por plano.
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    if (profile?.role === 'admin') {
+      return supabaseResponse
+    }
+
     const entityId = request.cookies.get('finapp_entity_id')?.value
 
     if (entityId) {

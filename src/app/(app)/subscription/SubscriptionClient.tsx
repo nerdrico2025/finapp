@@ -2,8 +2,9 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { CreditCard, CheckCircle2, XCircle, AlertCircle, Zap, Building2, User } from 'lucide-react'
+import { CreditCard, CheckCircle2, XCircle, AlertCircle, Zap, Building2, User, ShieldCheck } from 'lucide-react'
 import { createPortalSession, createCheckoutSession } from '@/lib/actions/stripe'
+import { isSuperAdmin } from '@/lib/plan'
 import type { Profile } from '@/types'
 
 const STATUS_MAP: Record<string, { label: string; icon: React.ReactNode; className: string }> = {
@@ -62,6 +63,24 @@ export function SubscriptionClient({ profile, showSuccess }: Props) {
   const status = subscription_status ? STATUS_MAP[subscription_status] ?? null : null
   const isActive = subscription_status === 'active'
   const isFree = plan_type === 'free'
+
+  // Super admin: acesso ilimitado, sem assinatura paga — UI dedicada
+  if (isSuperAdmin(profile)) {
+    return (
+      <div className="max-w-2xl mx-auto">
+        <div className="bg-gradient-to-br from-emerald-50 to-teal-50 rounded-2xl border border-emerald-100 px-6 py-8 text-center space-y-3">
+          <div className="w-14 h-14 mx-auto rounded-2xl bg-emerald-100 flex items-center justify-center">
+            <ShieldCheck className="w-7 h-7 text-emerald-600" />
+          </div>
+          <p className="text-lg font-bold text-emerald-900">Super Admin</p>
+          <p className="text-sm text-emerald-800 max-w-sm mx-auto">
+            Acesso ilimitado a todas as funcionalidades do FinApp, sem limites de
+            plano ou necessidade de assinatura.
+          </p>
+        </div>
+      </div>
+    )
+  }
 
   async function handlePortal() {
     setLoadingPortal(true)

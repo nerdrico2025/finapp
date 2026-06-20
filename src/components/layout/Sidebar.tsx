@@ -103,13 +103,14 @@ interface SidebarProps {
 export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClose }: SidebarProps) {
   const pathname = usePathname()
   const { activeEntity, activeEntityRole, isLoading } = useEntityContext()
-  const { plan, isPro, limits } = usePlan()
+  const { plan, isPro, limits, isSuperAdmin } = usePlan()
   const [txCount, setTxCount] = useState<number | null>(null)
 
   useEffect(() => {
+    if (isSuperAdmin) return // super admin — sem limite, sem contagem
     if (limits?.maxTransactionsPerMonth === null) return // pro plan — no limit, no need to count
     getMonthlyTransactionCount().then(setTxCount)
-  }, [limits?.maxTransactionsPerMonth])
+  }, [isSuperAdmin, limits?.maxTransactionsPerMonth])
 
   const isBusinessEntity = !isLoading && activeEntity?.type === 'business'
   const canManageMembers = isBusinessEntity && (activeEntityRole === 'owner' || activeEntityRole === 'admin')
@@ -174,7 +175,8 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
         })}
       </nav>
 
-      {/* Plan indicator */}
+      {/* Plan indicator — escondido para super admin (acesso ilimitado) */}
+      {!isSuperAdmin && (
       <div className="px-3 pb-2 shrink-0">
         {!isPro ? (
           <div className="rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-100 px-3 py-3 space-y-2">
@@ -212,6 +214,7 @@ export function Sidebar({ alertCount = 0, isAdmin = false, isOpen = false, onClo
           </div>
         )}
       </div>
+      )}
 
       {/* Bottom nav */}
       <div className="px-3 pb-4 border-t border-gray-100 pt-3 space-y-0.5 shrink-0">
