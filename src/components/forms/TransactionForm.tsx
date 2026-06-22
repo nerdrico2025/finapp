@@ -6,8 +6,9 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, AlertTriangle } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
-import { createTransaction, createTransfer, updateTransaction } from '@/lib/actions/transactions'
+import { createTransaction, createTransfer, updateTransaction, type DuplicateMatch } from '@/lib/actions/transactions'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
+import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import { CategorySelect } from '@/components/ui/CategorySelect'
 import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
@@ -29,8 +30,7 @@ const transactionSchema = z.object({
 type TransactionFormRaw = z.infer<typeof transactionSchema>
 
 interface DuplicateInfo {
-  existingId?: string
-  date?: string
+  matches: DuplicateMatch[]
 }
 
 interface TransactionFormProps {
@@ -175,7 +175,7 @@ export function TransactionForm({
 
     if (result.duplicate) {
       setPendingData(data)
-      setDuplicate({ existingId: result.existingId })
+      setDuplicate({ matches: result.duplicateMatches ?? [] })
       return
     }
 
@@ -418,24 +418,55 @@ export function TransactionForm({
       {duplicate && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
           <div className="fixed inset-0 bg-black/40 backdrop-blur-sm" />
-          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-sm p-6">
+          <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6">
             <div className="flex items-start gap-3 mb-4">
               <div className="w-10 h-10 bg-amber-100 rounded-full flex items-center justify-center shrink-0">
                 <AlertTriangle className="w-5 h-5 text-amber-600" />
               </div>
               <div>
-                <h3 className="text-sm font-semibold text-gray-900">Possível duplicata detectada</h3>
+                <h3 className="text-sm font-semibold text-gray-900">
+                  {duplicate.matches.length > 1
+                    ? 'Possíveis duplicatas detectadas'
+                    : 'Possível duplicata detectada'}
+                </h3>
                 <p className="text-sm text-gray-500 mt-1">
-                  Identificamos uma transação semelhante já registrada. Deseja registrar mesmo assim?
+                  Esta transação se parece com {duplicate.matches.length > 1 ? 'estas que já estão' : 'esta que já está'} registrada{duplicate.matches.length > 1 ? 's' : ''}. Confira antes de registrar:
                 </p>
               </div>
             </div>
+
+            <div className="space-y-2 mb-5 max-h-60 overflow-y-auto">
+              {duplicate.matches.map((m) => (
+                <div key={m.id} className="border border-gray-100 rounded-xl p-3 bg-gray-50/60">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <span className="text-sm font-medium text-gray-800 truncate">
+                      {m.description || 'Sem descrição'}
+                    </span>
+                    <span className="text-sm font-semibold text-gray-900 shrink-0">
+                      {formatCurrency(m.amount)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-500">
+                    <span>{formatDate(m.date)}</span>
+                    {m.categoryName && <span>· {m.categoryName}</span>}
+                  </div>
+                  <div className="flex flex-wrap gap-1 mt-2">
+                    {m.reasons.map((r, i) => (
+                      <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 font-medium">
+                        {r}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+
             <div className="flex gap-3">
               <button
                 onClick={() => { setDuplicate(null); setPendingData(null) }}
                 className="flex-1 py-2.5 px-4 border border-gray-300 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
               >
-                Cancelar
+                Não registrar
               </button>
               <button
                 onClick={handleForceCreate}

@@ -5,7 +5,18 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { getUserPlanLimits } from '@/lib/plan-server'
+import {
+  scoreDuplicate,
+  isDuplicateCandidate,
+  addDays,
+  DUP_DATE_WINDOW_DAYS,
+  DUP_SCORE_THRESHOLD,
+  type DuplicateMatch,
+  type ScoreInput,
+} from '@/lib/duplicate-detection'
 import type { TransactionType, TransactionStatus } from '@/types'
+
+export type { DuplicateMatch } from '@/lib/duplicate-detection'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -72,6 +83,76 @@ function generateImportHash(userId: string, amount: number, date: string, descri
   return createHash('md5')
     .update(`${userId}|${amount}|${date}|${(description ?? '').toLowerCase().trim()}`)
     .digest('hex')
+}
+
+// Loose shape for rows returned by the candidate query below.
+type CandidateRow = {
+  id: string
+  date: string
+  amount: number
+  description: string | null
+  type: string
+  category_id: string | null
+  category: { name: string } | { name: string }[] | null
+}
+
+function categoryName(row: CandidateRow): string | null {
+  const c = row.category
+  if (!c) return null
+  return Array.isArray(c) ? (c[0]?.name ?? null) : c.name
+}
+
+/**
+ * Find already-saved transactions that look like duplicates of `input`,
+ * ranked by score. Only rows with the same value and within the date window
+ * are queried; the fuzzy score decides which cross the threshold.
+ */
+async function findDuplicateMatches(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  supabase: any,
+  userId: string,
+  entityId: string | null,
+  input: ScoreInput
+): Promise<DuplicateMatch[]> {
+  let query = supabase
+    .from('transactions')
+    .select('id, date, amount, description, type, category_id, category:categories(name)')
+    .eq('user_id', userId)
+    .eq('type', input.type)
+    .eq('is_mirror', false)
+    .eq('amount', Math.abs(input.amount))
+    .gte('date', addDays(input.date, -DUP_DATE_WINDOW_DAYS))
+    .lte('date', addDays(input.date, DUP_DATE_WINDOW_DAYS))
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
+  const rows = (data ?? []) as unknown as CandidateRow[]
+
+  const matches: DuplicateMatch[] = []
+  for (const row of rows) {
+    const { score, reasons } = scoreDuplicate(input, {
+      type: row.type,
+      amount: row.amount,
+      date: row.date,
+      description: row.description,
+      categoryId: row.category_id,
+    })
+    if (score >= DUP_SCORE_THRESHOLD) {
+      matches.push({
+        id: row.id,
+        source: 'existing',
+        date: row.date,
+        amount: row.amount,
+        description: row.description,
+        categoryName: categoryName(row),
+        score,
+        reasons,
+      })
+    }
+  }
+
+  return matches.sort((a, b) => b.score - a.score).slice(0, 5)
 }
 
 // ─── Actions ──────────────────────────────────────────────────────────────────
@@ -145,7 +226,13 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 
 export async function createTransaction(
   formData: TransactionFormData
-): Promise<{ error: string | null; duplicate?: boolean; existingId?: string; feature?: string; message?: string }> {
+): Promise<{
+  error: string | null
+  duplicate?: boolean
+  duplicateMatches?: DuplicateMatch[]
+  feature?: string
+  message?: string
+}> {
   const supabase = await createClient()
 
   const {
@@ -183,33 +270,17 @@ export async function createTransaction(
     formData.description ?? ''
   )
 
-  if (!formData.force) {
-    let isDuplicate = false
-    let existingId: string | undefined
+  if (!formData.force && formData.type !== 'transfer') {
+    const matches = await findDuplicateMatches(supabase, user.id, entityId, {
+      type: formData.type,
+      amount: formData.amount,
+      date: formData.date,
+      description: formData.description ?? null,
+      categoryId: formData.category_id ?? null,
+    })
 
-    const { data: rpcResult, error: rpcError } = await supabase.rpc(
-      'is_duplicate_transaction' as never,
-      { p_user_id: user.id, p_import_hash: importHash } as never
-    )
-
-    if (!rpcError && rpcResult) {
-      isDuplicate = true
-    } else {
-      const { data: existing } = await supabase
-        .from('transactions')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('import_hash', importHash)
-        .maybeSingle()
-
-      if (existing) {
-        isDuplicate = true
-        existingId = existing.id
-      }
-    }
-
-    if (isDuplicate) {
-      return { error: null, duplicate: true, existingId }
+    if (matches.length > 0) {
+      return { error: null, duplicate: true, duplicateMatches: matches }
     }
   }
 
@@ -440,6 +511,129 @@ export async function getTransactionSummary(filters: Pick<TransactionFilters, 'm
   const totalExpenses = data.filter(t => t.type === 'expense').reduce((s, t) => s + t.amount, 0)
 
   return { totalIncome, totalExpenses, error: null }
+}
+
+export interface ImportDupInput {
+  date: string
+  description: string
+  amount: number // signed: negative = expense, positive = income
+  categoryId?: string | null
+}
+
+/**
+ * For each row about to be imported, find a likely duplicate — either an
+ * already-saved transaction or an earlier row in the same file. Returns an
+ * array aligned by index with the input (null where no duplicate is suspected),
+ * so the UI can ask the user to confirm before importing.
+ */
+export async function findImportDuplicates(
+  rows: ImportDupInput[]
+): Promise<(DuplicateMatch | null)[]> {
+  const result: (DuplicateMatch | null)[] = rows.map(() => null)
+  if (rows.length === 0) return result
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return result
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  const valid = rows
+    .map((r, i) => ({ r, i }))
+    .filter(({ r }) => r.date && Number.isFinite(r.amount) && r.amount !== 0)
+
+  if (valid.length === 0) return result
+
+  // Pull every existing transaction inside the overall date window once,
+  // then score in memory — far cheaper than a query per row.
+  const dates = valid.map(({ r }) => r.date).sort()
+  const from = addDays(dates[0], -DUP_DATE_WINDOW_DAYS)
+  const to = addDays(dates[dates.length - 1], DUP_DATE_WINDOW_DAYS)
+
+  let query = supabase
+    .from('transactions')
+    .select('id, date, amount, description, type, category_id, category:categories(name)')
+    .eq('user_id', user.id)
+    .eq('is_mirror', false)
+    .gte('date', from)
+    .lte('date', to)
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
+  const existing = (data ?? []) as unknown as CandidateRow[]
+
+  for (const { r, i } of valid) {
+    const input: ScoreInput = {
+      type: r.amount >= 0 ? 'income' : 'expense',
+      amount: r.amount,
+      date: r.date,
+      description: r.description,
+      categoryId: r.categoryId ?? null,
+    }
+
+    // 1. Best match among already-saved transactions.
+    let best: DuplicateMatch | null = null
+    for (const row of existing) {
+      const { score, reasons } = scoreDuplicate(input, {
+        type: row.type,
+        amount: row.amount,
+        date: row.date,
+        description: row.description,
+        categoryId: row.category_id,
+      })
+      if (score >= DUP_SCORE_THRESHOLD && (!best || score > best.score)) {
+        best = {
+          id: row.id,
+          source: 'existing',
+          date: row.date,
+          amount: row.amount,
+          description: row.description,
+          categoryName: categoryName(row),
+          score,
+          reasons,
+        }
+      }
+    }
+
+    // 2. Otherwise, an earlier row in this same file (repeated line).
+    if (!best) {
+      for (const { r: prev, i: j } of valid) {
+        if (j >= i) break
+        if (isDuplicateCandidate(input, {
+          type: prev.amount >= 0 ? 'income' : 'expense',
+          amount: prev.amount,
+          date: prev.date,
+          description: prev.description,
+          categoryId: prev.categoryId ?? null,
+        })) {
+          const { reasons, score } = scoreDuplicate(input, {
+            type: prev.amount >= 0 ? 'income' : 'expense',
+            amount: prev.amount,
+            date: prev.date,
+            description: prev.description,
+            categoryId: prev.categoryId ?? null,
+          })
+          best = {
+            id: `file:${j}`,
+            source: 'file',
+            date: prev.date,
+            amount: Math.abs(prev.amount),
+            description: prev.description,
+            categoryName: null,
+            score,
+            reasons: ['Repetida no arquivo', ...reasons],
+          }
+          break
+        }
+      }
+    }
+
+    result[i] = best
+  }
+
+  return result
 }
 
 export async function importTransactions(rows: CSVRow[]): Promise<{

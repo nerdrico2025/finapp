@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus,
 } from 'lucide-react'
-import { importTransactions, type CSVRow } from '@/lib/actions/transactions'
+import { importTransactions, findImportDuplicates, type CSVRow, type DuplicateMatch } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
@@ -32,6 +32,7 @@ interface EditableRow {
   categoryId: string | null
   source: 'rule' | 'ai' | 'keyword' | 'manual' | null
   checked: boolean
+  duplicate?: DuplicateMatch | null
   error?: string
   raw: string
 }
@@ -324,6 +325,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [selectedAccount, setSelectedAccount] = useState(accounts[0]?.id ?? '')
   const [importing, setImporting] = useState(false)
   const [suggestingAi, setSuggestingAi] = useState(false)
+  const [checkingDuplicates, setCheckingDuplicates] = useState(false)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
   const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
@@ -393,6 +395,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
+          runDuplicateCheck(parsed)
         } else { setStep('mapping') }
       }
 
@@ -431,6 +434,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
+          runDuplicateCheck(parsed)
         } else {
           console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
           setStep('mapping')
@@ -445,6 +449,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
+          runDuplicateCheck(parsed)
       }
 
       else if (fmt === 'pdf') {
@@ -459,6 +464,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
+          runDuplicateCheck(parsed)
       }
     } catch (err) {
       setParseError(`Erro ao processar o arquivo: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
@@ -471,6 +477,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setEditableRows(parsed)
     setStep('preview')
     runAiSuggestions(parsed)
+          runDuplicateCheck(parsed)
   }
 
   function handleCategoryChange(rowIdx: number, value: string) {
@@ -511,6 +518,38 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
       }
     } finally {
       setSuggestingAi(false)
+    }
+  }
+
+  // Flag rows that look like duplicates (of saved transactions or earlier
+  // rows in this file) and uncheck them by default — the user opts back in.
+  async function runDuplicateCheck(rows: EditableRow[]) {
+    const valid = rows
+      .map((r, i) => ({ i, r }))
+      .filter(({ r }) => !r.error && r.date)
+    if (valid.length === 0) return
+    setCheckingDuplicates(true)
+    try {
+      const matches = await findImportDuplicates(
+        valid.map(({ r }) => ({
+          date: r.date,
+          description: r.description,
+          amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
+          categoryId: r.categoryId,
+        }))
+      )
+      setEditableRows(prev => {
+        const next = [...prev]
+        valid.forEach(({ i: idx }, k) => {
+          const m = matches[k]
+          if (m) next[idx] = { ...next[idx], duplicate: m, checked: false }
+        })
+        return next
+      })
+    } catch {
+      // detection failure is silent — never blocks the import
+    } finally {
+      setCheckingDuplicates(false)
     }
   }
 
@@ -576,6 +615,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const checkedRows = editableRows.filter(r => r.checked && !r.error && r.date)
   const errorRows = editableRows.filter(r => r.error)
   const validCount = editableRows.filter(r => !r.error).length
+  const duplicateCount = editableRows.filter(r => r.duplicate && !r.error).length
 
   // ── Result ──────────────────────────────────────────────────────────────────
   if (step === 'done' && result) {
@@ -783,6 +823,27 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             </div>
           )}
 
+          {checkingDuplicates && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg bg-orange-50 border border-orange-200 px-4 py-3">
+              <Loader2 className="w-5 h-5 animate-spin text-orange-500 shrink-0" />
+              <p className="text-sm font-semibold text-orange-800">Verificando possíveis duplicatas…</p>
+            </div>
+          )}
+
+          {!checkingDuplicates && duplicateCount > 0 && (
+            <div className="mb-3 flex items-start gap-3 rounded-lg bg-orange-50 border border-orange-200 px-4 py-3">
+              <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-orange-800">
+                  {duplicateCount} possíve{duplicateCount > 1 ? 'is' : 'l'} duplicata{duplicateCount > 1 ? 's' : ''} desmarcada{duplicateCount > 1 ? 's' : ''}
+                </p>
+                <p className="text-xs text-orange-600 mt-0.5">
+                  Parecem já existir ou estar repetidas no arquivo. Revise e marque apenas as que quiser importar.
+                </p>
+              </div>
+            </div>
+          )}
+
           <div className="border border-gray-100 rounded-xl overflow-hidden">
             <div className="max-h-80 overflow-y-auto">
               <table className="w-full table-fixed text-xs">
@@ -848,12 +909,24 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         {row.error ? (
                           <span className="block truncate text-red-500 italic" title={row.error}>{row.error}</span>
                         ) : (
-                          <input
-                            value={row.description}
-                            onChange={e => updateRow(i, { description: e.target.value })}
-                            title={row.description}
-                            className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors truncate"
-                          />
+                          <>
+                            <input
+                              value={row.description}
+                              onChange={e => updateRow(i, { description: e.target.value })}
+                              title={row.description}
+                              className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors truncate"
+                            />
+                            {row.duplicate && (
+                              <span
+                                className="inline-flex items-center gap-1 mt-0.5 text-[10px] font-medium text-orange-600"
+                                title={`${row.duplicate.source === 'file' ? 'Repetida no arquivo' : 'Já registrada'}: ${row.duplicate.reasons.join(' · ')}`}
+                              >
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                {row.duplicate.source === 'file' ? 'Repetida no arquivo' : 'Possível duplicata'}
+                                <span className="text-orange-400 font-normal">· {row.duplicate.reasons.join(', ')}</span>
+                              </span>
+                            )}
+                          </>
                         )}
                       </td>
 
