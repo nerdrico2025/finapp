@@ -10,7 +10,7 @@ import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
-import { buildCategoryTree } from '@/components/ui/CategorySelect'
+import { CategorySelect } from '@/components/ui/CategorySelect'
 import type { Account, Category } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -480,14 +480,6 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           runDuplicateCheck(parsed)
   }
 
-  function handleCategoryChange(rowIdx: number, value: string) {
-    if (value === '__new__') {
-      setNewCat({ rowIdx, name: '', color: '#6b7280', saving: false })
-    } else {
-      updateRow(rowIdx, { categoryId: value || null, source: value ? 'manual' : null })
-    }
-  }
-
   async function runAiSuggestions(rows: EditableRow[]) {
     const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && r.checked)
     if (toSuggest.length === 0) return
@@ -934,35 +926,16 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                       <td className="px-2 py-1.5">
                         {suggestingAi && !row.categoryId && !row.error ? (
                           <div className="h-4 w-28 bg-amber-100 rounded animate-pulse" />
-                        ) : (() => {
-                          const { parents, childrenByParent } = buildCategoryTree(
-                            allCategories.filter(c => c.type === row.type)
-                          )
-                          return (
-                            <select
-                              value={row.categoryId ?? ''}
-                              onChange={e => handleCategoryChange(i, e.target.value)}
-                              disabled={!!row.error}
-                              className="w-full bg-transparent text-gray-600 focus:outline-none focus:ring-1 focus:ring-emerald-400 rounded text-xs py-0.5 border border-transparent hover:border-gray-200 transition-colors"
-                            >
-                              <option value="">— categoria —</option>
-                              {parents.map(parent => {
-                                const children = childrenByParent.get(parent.id) ?? []
-                                if (children.length === 0) {
-                                  return <option key={parent.id} value={parent.id}>{parent.icon} {parent.name}</option>
-                                }
-                                return (
-                                  <optgroup key={parent.id} label={`${parent.icon ?? ''} ${parent.name}`}>
-                                    {children.map(child => (
-                                      <option key={child.id} value={child.id}>{child.icon} {child.name}</option>
-                                    ))}
-                                  </optgroup>
-                                )
-                              })}
-                              <option value="__new__">+ Nova categoria</option>
-                            </select>
-                          )
-                        })()}
+                        ) : row.error ? null : (
+                          <CategorySelect
+                            categories={allCategories.filter(c => c.type === row.type)}
+                            value={row.categoryId ?? ''}
+                            onChange={val => updateRow(i, { categoryId: val || null, source: val ? 'manual' : null })}
+                            onCreateNew={() => setNewCat({ rowIdx: i, name: '', color: '#6b7280', saving: false })}
+                            placeholder="— categoria —"
+                            compact
+                          />
+                        )}
                       </td>
 
                       {/* Source badge */}

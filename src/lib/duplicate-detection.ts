@@ -11,7 +11,7 @@
 //   • same category
 
 export const DUP_DATE_WINDOW_DAYS = 4
-export const DUP_SCORE_THRESHOLD = 60
+export const DUP_SCORE_THRESHOLD = 70
 
 // Common Portuguese filler + bank-statement noise that shouldn't drive matches.
 const STOPWORDS = new Set([
@@ -101,34 +101,47 @@ export function scoreDuplicate(
   let score = 40
 
   if (days === 0) {
-    score += 30
+    score += 25
     reasons.push('Mesma data')
   } else if (days <= 1) {
-    score += 22
+    score += 15
     reasons.push('Data próxima (1 dia)')
   } else if (days <= 3) {
-    score += 14
+    score += 8
     reasons.push(`Data próxima (${days} dias)`)
   } else {
-    score += 8
+    score += 4
     reasons.push(`Data próxima (${days} dias)`)
   }
 
+  // A corroborating signal beyond value+date — without one, same value on the
+  // same day is *not* enough to call it a duplicate (too many false positives).
   const sim = descriptionSimilarity(a.description ?? '', b.description ?? '')
+  let corroborated = false
   if (sim >= 0.8) {
-    score += 20
+    score += 35
+    corroborated = true
     reasons.push('Descrição quase idêntica')
   } else if (sim >= 0.5) {
-    score += 14
+    score += 25
+    corroborated = true
     reasons.push('Descrição parecida')
   } else if (sim >= 0.25) {
-    score += 7
+    score += 12
+    corroborated = true
     reasons.push('Algumas palavras em comum')
   }
 
-  if (a.categoryId && b.categoryId && a.categoryId === b.categoryId) {
-    score += 10
+  const sameCategory = !!(a.categoryId && b.categoryId && a.categoryId === b.categoryId)
+  if (sameCategory) {
+    score += 15
+    corroborated = true
     reasons.push('Mesma categoria')
+  }
+
+  // Cap pure value+date matches below the threshold so they never flag alone.
+  if (!corroborated) {
+    score = Math.min(score, DUP_SCORE_THRESHOLD - 5)
   }
 
   return { score: Math.min(score, 100), reasons }

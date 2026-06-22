@@ -228,6 +228,7 @@ export async function seedDefaultCategories(userId: string) {
     {
       parent: 'Transporte', color: '#3b82f6',
       subs: [
+        { name: 'Aplicativos de transporte', icon: '🚕' },
         { name: 'Combustível',              icon: '⛽' },
         { name: 'Estacionamento e pedágio', icon: '🅿️' },
         { name: 'Manutenção do veículo',    icon: '🔧' },

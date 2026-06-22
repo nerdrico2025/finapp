@@ -89,7 +89,7 @@ async function incrementMatchCount(
 // Mapeia palavras comuns em descrições de transações brasileiras para padrões de nomes de categoria.
 // Funciona sem API externa — simples inclusão de substring após normalização.
 const KEYWORD_RULES: Array<{ words: string[]; categoryPatterns: string[] }> = [
-  { words: ['uber', '99', 'cabify', 'indrive', 'taxi', 'onibus', 'metro', 'trem', 'brt', 'vlt', 'passagem'], categoryPatterns: ['transporte', 'mobilidade', 'taxi', 'deslocamento'] },
+  { words: ['uber', '99', 'cabify', 'indrive', 'taxi', 'onibus', 'metro', 'trem', 'brt', 'vlt', 'passagem'], categoryPatterns: ['aplicativos de transporte', 'transporte', 'mobilidade', 'taxi', 'deslocamento'] },
   { words: ['gasolina', 'etanol', 'combustivel', 'diesel', 'posto', 'shell', 'ipiranga', 'petrobras', 'ale', 'br dte'], categoryPatterns: ['combustivel', 'automovel', 'veiculo', 'transporte'] },
   { words: ['pedagio', 'sem parar', 'veloe', 'movemais', 'estacionamento', 'autopark', 'estapar'], categoryPatterns: ['estacionamento', 'transporte', 'automovel'] },
   { words: ['ifood', 'rappi', 'delivery', 'mcdonalds', 'burguer', 'burger', 'hamburguer', 'pizza', 'dominos', 'habib', 'lanche', 'almoco', 'jantar', 'restaurante', 'refeicao', 'cafe', 'padaria', 'pastel', 'sushi', 'comida', 'bob', 'acougue'], categoryPatterns: ['alimentacao', 'refeicao', 'restaurante', 'comida', 'lanche'] },
