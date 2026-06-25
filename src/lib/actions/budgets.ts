@@ -59,39 +59,40 @@ export async function getBudgetsWithSpending(month: number, year: number) {
 
   const { data: transactions } = await txQuery
 
-  // Build category → parent map so parent budgets can absorb subcategory spending
+  // A budget on a parent category should absorb spending from its descendant
+  // subcategories at ANY depth (e.g. Financiamento › Imobiliário › Apartamento).
   const budgetedCategoryIds = new Set(rawBudgets.map((b) => b.category_id))
 
-  // Fetch parent_id for ALL categories that appear in transactions (to resolve ancestry)
-  const txCategoryIds = Array.from(new Set((transactions ?? []).map((t) => t.category_id).filter((id): id is string => !!id)))
-  let categoryParentMap = new Map<string, string | null>()
-  if (txCategoryIds.length > 0) {
-    const { data: cats } = await supabase
-      .from('categories')
-      .select('id, parent_id')
-      .in('id', txCategoryIds.filter((id): id is string => id !== null))
-    for (const c of (cats ?? []) as { id: string; parent_id: string | null }[]) {
-      categoryParentMap.set(c.id, c.parent_id)
+  // Fetch the full category tree (id → parent_id) so we can walk ancestry chains.
+  // RLS already scopes this to the current user; no extra entity filter needed.
+  const categoryParentMap = new Map<string, string | null>()
+  const { data: cats } = await supabase
+    .from('categories')
+    .select('id, parent_id')
+    .eq('user_id', user.id)
+  for (const c of (cats ?? []) as { id: string; parent_id: string | null }[]) {
+    categoryParentMap.set(c.id, c.parent_id)
+  }
+
+  // Resolve a transaction's category to the nearest budgeted category, walking
+  // up the parent chain. Checking the category itself first means a subcategory
+  // with its OWN budget is charged to itself — the parent never double counts it.
+  const resolveBudgetCategory = (categoryId: string): string | null => {
+    let current: string | null = categoryId
+    const seen = new Set<string>() // guard against cyclical parent links
+    while (current && !seen.has(current)) {
+      if (budgetedCategoryIds.has(current)) return current
+      seen.add(current)
+      current = categoryParentMap.get(current) ?? null
     }
+    return null
   }
 
   // For each transaction decide which budget category to charge
   const spentByBudgetCategory = new Map<string, number>()
   for (const tx of transactions ?? []) {
     if (!tx.category_id) continue
-    let chargeId: string | null = null
-
-    if (budgetedCategoryIds.has(tx.category_id)) {
-      // Exact match — subcategory budget takes priority
-      chargeId = tx.category_id
-    } else {
-      // Fall back to parent budget if it exists
-      const parentId = categoryParentMap.get(tx.category_id)
-      if (parentId && budgetedCategoryIds.has(parentId)) {
-        chargeId = parentId
-      }
-    }
-
+    const chargeId = resolveBudgetCategory(tx.category_id)
     if (chargeId) {
       spentByBudgetCategory.set(chargeId, (spentByBudgetCategory.get(chargeId) ?? 0) + tx.amount)
     }

@@ -12,6 +12,7 @@ interface SearchParams {
   year?: string
   type?: string
   categoryId?: string
+  subIds?: string
   accountId?: string
   page?: string
 }
@@ -29,16 +30,34 @@ export default async function TransactionsPage({
   const categoryId = searchParams.categoryId
   const accountId = searchParams.accountId
 
-  const [
-    { data: transactions, count },
-    { data: accounts },
-    { data: categories },
-    summary,
-  ] = await Promise.all([
-    getTransactions({ month, year, type, categoryId, accountId, page, pageSize: 20 }),
+  // Accounts + categories first — the category tree is needed to resolve the
+  // two-level (parent + subcategory) filter before querying transactions.
+  const [{ data: accounts }, { data: categories }] = await Promise.all([
     getAccounts(),
     getCategories(),
-    getTransactionSummary({ month, year, categoryId, accountId }),
+  ])
+  const cats = categories ?? []
+
+  // Two-level category filter: a parent category (categoryId) optionally
+  // narrowed to a subset of its subcategories (subIds). When subIds is absent
+  // the filter is "parent + all its children"; when present it is exactly the
+  // listed subcategories (empty = match nothing).
+  const childIds = categoryId
+    ? cats.filter((c) => c.parent_id === categoryId).map((c) => c.id)
+    : []
+  const selectedSubIds =
+    categoryId && searchParams.subIds !== undefined
+      ? searchParams.subIds.split(',').filter((id) => childIds.includes(id))
+      : null // null = all subcategories
+
+  let categoryIds: string[] | undefined
+  if (categoryId) {
+    categoryIds = selectedSubIds !== null ? selectedSubIds : [categoryId, ...childIds]
+  }
+
+  const [{ data: transactions, count }, summary] = await Promise.all([
+    getTransactions({ month, year, type, categoryIds, accountId, page, pageSize: 20 }),
+    getTransactionSummary({ month, year, categoryIds, accountId }),
   ])
 
   return (
@@ -46,8 +65,16 @@ export default async function TransactionsPage({
       transactions={transactions ?? []}
       totalCount={count}
       accounts={accounts ?? []}
-      categories={categories ?? []}
-      filters={{ month, year, type, categoryId, accountId, page }}
+      categories={cats}
+      filters={{
+        month,
+        year,
+        type,
+        categoryId,
+        subIds: selectedSubIds ?? undefined,
+        accountId,
+        page,
+      }}
       totalIncome={summary.totalIncome}
       totalExpenses={summary.totalExpenses}
     />

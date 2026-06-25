@@ -1,9 +1,9 @@
 'use client'
 
 import { useRouter, usePathname } from 'next/navigation'
-import { useState, useCallback } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
-  Plus, Upload, ChevronLeft, ChevronRight, Trash2, Pencil,
+  Plus, Upload, ChevronLeft, ChevronRight, ChevronDown, Trash2, Pencil,
   ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -33,6 +33,9 @@ interface Filters {
   year: number
   type: TransactionType | 'all'
   categoryId?: string
+  /** Selected subcategory ids of the parent in `categoryId`.
+   *  `undefined` = all subcategories (no narrowing). */
+  subIds?: string[]
   accountId?: string
   page: number
 }
@@ -84,9 +87,28 @@ export function TransactionsClient({
     params.set('year', String(next.year))
     if (next.type !== 'all') params.set('type', next.type)
     if (next.categoryId) params.set('categoryId', next.categoryId)
+    // Only serialize subIds when narrowing to a subset (undefined = all).
+    // An empty list is kept (`subIds=`) so "none selected" survives the round-trip.
+    if (next.categoryId && next.subIds !== undefined) params.set('subIds', next.subIds.join(','))
     if (next.accountId) params.set('accountId', next.accountId)
     if (next.page > 1) params.set('page', String(next.page))
     router.push(`${pathname}?${params.toString()}`)
+  }
+
+  // ─── Two-level category filter ────────────────────────────────────────────
+  const parentCategories = categories.filter((c) => !c.parent_id)
+  const childrenOfSelected = filters.categoryId
+    ? categories.filter((c) => c.parent_id === filters.categoryId)
+    : []
+
+  function toggleSubcategory(childId: string) {
+    const allIds = childrenOfSelected.map((c) => c.id)
+    const current = filters.subIds ?? allIds // expand "all" to the full list
+    const next = current.includes(childId)
+      ? current.filter((id) => id !== childId)
+      : [...current, childId]
+    // Back to every child checked → drop the narrowing (parent + all children).
+    pushFilters({ subIds: next.length === allIds.length ? undefined : next })
   }
 
   async function handleDelete(tx: TransactionWithRelations) {
@@ -236,14 +258,21 @@ export function TransactionsClient({
 
           <select
             value={filters.categoryId ?? ''}
-            onChange={(e) => pushFilters({ categoryId: e.target.value || undefined })}
+            onChange={(e) => pushFilters({ categoryId: e.target.value || undefined, subIds: undefined })}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-emerald-500"
           >
             <option value="">Todas as categorias</option>
-            {categories.map((c) => (
+            {parentCategories.map((c) => (
               <option key={c.id} value={c.id}>{c.icon} {c.name}</option>
             ))}
           </select>
+
+          <SubcategoryFilter
+            subcategories={childrenOfSelected}
+            selectedSubIds={filters.subIds}
+            disabled={!filters.categoryId || childrenOfSelected.length === 0}
+            onToggle={toggleSubcategory}
+          />
 
           <select
             value={filters.accountId ?? ''}
@@ -258,7 +287,7 @@ export function TransactionsClient({
 
           {(filters.type !== 'all' || filters.categoryId || filters.accountId) && (
             <button
-              onClick={() => pushFilters({ type: 'all', categoryId: undefined, accountId: undefined })}
+              onClick={() => pushFilters({ type: 'all', categoryId: undefined, subIds: undefined, accountId: undefined })}
               className="flex items-center gap-1.5 px-3 py-2 text-sm text-gray-500 hover:text-gray-700 hover:bg-gray-50 rounded-lg border border-gray-200 transition-colors"
             >
               <X className="w-3.5 h-3.5" />
@@ -457,6 +486,88 @@ function TransactionRow({
         </button>
       </div>
     </li>
+  )
+}
+
+// ─── Subcategory multi-select ────────────────────────────────────────────────
+
+function SubcategoryFilter({
+  subcategories,
+  selectedSubIds,
+  disabled,
+  onToggle,
+}: {
+  subcategories: Category[]
+  selectedSubIds?: string[] // undefined = all selected
+  disabled: boolean
+  onToggle: (childId: string) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    return () => document.removeEventListener('mousedown', onDocClick)
+  }, [open])
+
+  // When disabled (no parent selected, or parent has no children) show a greyed,
+  // non-interactive control fixed on "Todas as subcategorias".
+  if (disabled) {
+    return (
+      <button
+        type="button"
+        disabled
+        title="Selecione uma categoria com subcategorias"
+        className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-400 cursor-not-allowed"
+      >
+        Todas as subcategorias
+        <ChevronDown className="w-4 h-4" />
+      </button>
+    )
+  }
+
+  const isAll = selectedSubIds === undefined
+  const checked = new Set(isAll ? subcategories.map((c) => c.id) : selectedSubIds)
+  const label = isAll
+    ? 'Todas as subcategorias'
+    : `${checked.size} ${checked.size === 1 ? 'subcategoria' : 'subcategorias'}`
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex items-center gap-2 px-3 py-2 border border-gray-200 rounded-lg text-sm bg-white text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-emerald-500 transition-colors"
+      >
+        {label}
+        <ChevronDown className={cn('w-4 h-4 transition-transform', open && 'rotate-180')} />
+      </button>
+
+      {open && (
+        <div className="absolute z-20 mt-1 w-60 max-h-72 overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg p-1">
+          {subcategories.map((c) => (
+            <label
+              key={c.id}
+              className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-gray-50 cursor-pointer"
+            >
+              <input
+                type="checkbox"
+                checked={checked.has(c.id)}
+                onChange={() => onToggle(c.id)}
+                className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              <span className="text-sm text-gray-700 truncate">
+                {c.icon} {c.name}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
   )
 }
 

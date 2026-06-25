@@ -25,6 +25,9 @@ export interface TransactionFilters {
   year?: number
   type?: TransactionType | 'all'
   categoryId?: string
+  /** Explicit set of category ids to match (parent + subcategories). Takes
+   *  precedence over `categoryId`. An empty array matches nothing. */
+  categoryIds?: string[]
   accountId?: string
   page?: number
   pageSize?: number
@@ -184,7 +187,7 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
-  const { month, year, type, categoryId, accountId, page = 1, pageSize = 20 } = filters
+  const { month, year, type, categoryId, categoryIds, accountId, page = 1, pageSize = 20 } = filters
 
   const now = new Date()
   const filterYear = year ?? now.getFullYear()
@@ -212,7 +215,12 @@ export async function getTransactions(filters: TransactionFilters = {}) {
 
   if (entityId) query = query.eq('entity_id', entityId)
   if (type && type !== 'all') query = query.eq('type', type)
-  if (categoryId) query = query.eq('category_id', categoryId)
+  if (categoryIds) {
+    if (categoryIds.length === 0) return { data: [], count: 0, error: null }
+    query = query.in('category_id', categoryIds)
+  } else if (categoryId) {
+    query = query.eq('category_id', categoryId)
+  }
   if (accountId) query = query.eq('account_id', accountId)
 
   const { data, count, error } = await query
@@ -472,7 +480,7 @@ export async function deleteTransaction(id: string): Promise<{ error: string | n
   return { error: null }
 }
 
-export async function getTransactionSummary(filters: Pick<TransactionFilters, 'month' | 'year' | 'categoryId' | 'accountId'>) {
+export async function getTransactionSummary(filters: Pick<TransactionFilters, 'month' | 'year' | 'categoryId' | 'categoryIds' | 'accountId'>) {
   const supabase = await createClient()
 
   const {
@@ -500,7 +508,12 @@ export async function getTransactionSummary(filters: Pick<TransactionFilters, 'm
     .lt('date', to)
 
   if (entityId) baseQuery = baseQuery.eq('entity_id', entityId)
-  if (filters.categoryId) baseQuery = baseQuery.eq('category_id', filters.categoryId)
+  if (filters.categoryIds) {
+    if (filters.categoryIds.length === 0) return { totalIncome: 0, totalExpenses: 0, error: null }
+    baseQuery = baseQuery.in('category_id', filters.categoryIds)
+  } else if (filters.categoryId) {
+    baseQuery = baseQuery.eq('category_id', filters.categoryId)
+  }
   if (filters.accountId) baseQuery = baseQuery.eq('account_id', filters.accountId)
 
   const { data, error } = await baseQuery
