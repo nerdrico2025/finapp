@@ -30,7 +30,7 @@ interface EditableRow {
   amount: number        // signed: negative = expense, positive = income
   type: 'income' | 'expense'
   categoryId: string | null
-  source: 'rule' | 'ai' | 'keyword' | 'manual' | null
+  source: 'rule' | 'ai' | 'keyword' | 'manual' | 'auto' | null
   checked: boolean
   duplicate?: DuplicateMatch | null
   error?: string
@@ -582,6 +582,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
       amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
       account_id: selectedAccount,
       category_id: r.categoryId ?? null,
+      category_source: r.categoryId ? r.source : null,
     }))
     const res = await importTransactions(valid)
 
@@ -940,6 +941,11 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Source badge */}
                       <td className="px-2 py-1.5">
+                        {row.source === 'auto' && (
+                          <span className="inline-block px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 text-[10px] font-medium whitespace-nowrap">
+                            ✓ Auto
+                          </span>
+                        )}
                         {row.source === 'rule' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 text-[10px] font-medium whitespace-nowrap">
                             Regra

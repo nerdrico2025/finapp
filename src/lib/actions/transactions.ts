@@ -14,7 +14,7 @@ import {
   type DuplicateMatch,
   type ScoreInput,
 } from '@/lib/duplicate-detection'
-import type { TransactionType, TransactionStatus } from '@/types'
+import type { TransactionType, TransactionStatus, CategorySource } from '@/types'
 
 export type { DuplicateMatch } from '@/lib/duplicate-detection'
 
@@ -39,6 +39,9 @@ export interface TransactionFormData {
   date: string
   account_id: string
   category_id?: string | null
+  /** Como a categoria foi definida — usado para saber se a transação já foi
+   *  "revisada" por um humano (ver propagateCorrection em ai-categorization.ts). */
+  category_source?: CategorySource | null
   description?: string | null
   notes?: string | null
   destination_account_id?: string | null
@@ -53,6 +56,7 @@ export interface CSVRow {
   amount: number
   account_id: string
   category_id?: string | null
+  category_source?: CategorySource | null
 }
 
 export type TransactionWithRelations = {
@@ -60,6 +64,7 @@ export type TransactionWithRelations = {
   user_id: string
   account_id: string
   category_id: string | null
+  category_source: CategorySource | null
   type: TransactionType
   amount: number
   description: string | null
@@ -299,6 +304,7 @@ export async function createTransaction(
       entity_id: entityId,
       account_id: formData.account_id,
       category_id: formData.category_id ?? null,
+      category_source: formData.category_id ? (formData.category_source ?? 'manual') : null,
       type: formData.type,
       amount: formData.amount,
       description: formData.description ?? null,
@@ -417,6 +423,9 @@ export async function updateTransaction(
     .update({
       account_id: newAccountId,
       category_id: formData.category_id !== undefined ? formData.category_id : original.category_id,
+      category_source: formData.category_id !== undefined
+        ? (formData.category_id ? (formData.category_source ?? 'manual') : null)
+        : original.category_source,
       type: newType,
       amount: newAmount,
       description: formData.description !== undefined ? formData.description : original.description,
@@ -694,6 +703,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         entity_id: entityId,
         account_id: row.account_id,
         category_id: row.category_id ?? null,
+        category_source: row.category_id ? (row.category_source ?? 'manual') : null,
         type,
         amount,
         description: row.description,

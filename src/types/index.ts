@@ -174,6 +174,7 @@ export interface Database {
           entity_id: string | null
           account_id: string
           category_id: string | null
+          category_source: 'manual' | 'rule' | 'ai' | 'keyword' | 'auto' | 'propagated' | null
           type: 'income' | 'expense' | 'transfer'
           amount: number
           description: string | null
@@ -197,6 +198,7 @@ export interface Database {
           entity_id?: string | null
           account_id: string
           category_id?: string | null
+          category_source?: 'manual' | 'rule' | 'ai' | 'keyword' | 'auto' | 'propagated' | null
           type: 'income' | 'expense' | 'transfer'
           amount: number
           description?: string | null
@@ -218,6 +220,7 @@ export interface Database {
           entity_id?: string | null
           account_id?: string
           category_id?: string | null
+          category_source?: 'manual' | 'rule' | 'ai' | 'keyword' | 'auto' | 'propagated' | null
           type?: 'income' | 'expense' | 'transfer'
           amount?: number
           description?: string | null
@@ -613,6 +616,7 @@ export type Profile = Tables['profiles']['Row']
 export type Account = Tables['accounts']['Row']
 export type Category = Tables['categories']['Row']
 export type Transaction = Tables['transactions']['Row']
+export type CategorySource = NonNullable<Transaction['category_source']>
 export type RecurringRule = Tables['recurring_rules']['Row']
 export type BillAlert = Tables['bill_alerts']['Row']
 export type Budget = Tables['budgets']['Row']

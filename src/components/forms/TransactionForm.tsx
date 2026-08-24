@@ -5,14 +5,15 @@ import { useForm, Controller } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, AlertTriangle } from 'lucide-react'
+import { toast } from 'sonner'
 import { cn } from '@/lib/utils/cn'
 import { createTransaction, createTransfer, updateTransaction, type DuplicateMatch } from '@/lib/actions/transactions'
-import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
+import { suggestCategory, learnRule, propagateCorrection } from '@/lib/actions/ai-categorization'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import { CategorySelect } from '@/components/ui/CategorySelect'
 import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
-import type { Account, Category } from '@/types'
+import type { Account, Category, CategorySource } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
 
 const transactionSchema = z.object({
@@ -58,7 +59,7 @@ export function TransactionForm({
   const [duplicate, setDuplicate] = useState<DuplicateInfo | null>(null)
   const [pendingData, setPendingData] = useState<TransactionFormRaw | null>(null)
   const [aiSuggestion, setAiSuggestion] = useState<{
-    source: 'rule' | 'ai' | 'keyword'
+    source: 'rule' | 'ai' | 'keyword' | 'auto'
     category_name: string
     category_id: string
   } | null>(null)
@@ -137,12 +138,21 @@ export function TransactionForm({
   async function submitForm(data: TransactionFormRaw, force = false) {
     setServerError(null)
 
+    const categoryId = data.category_id || null
+    // Se a categoria salva é a mesma que a sugestão exibida, a fonte é a da
+    // sugestão (regra/IA/palavra-chave/auto); qualquer outra coisa — escolha
+    // do zero ou troca deliberada da sugestão — conta como 'manual'.
+    const categorySource: CategorySource | null = categoryId
+      ? (aiSuggestion && aiSuggestion.category_id === categoryId ? aiSuggestion.source : 'manual')
+      : null
+
     const payload = {
       type: data.type,
       amount: parseFloat(data.amount) || 0,
       date: data.date,
       account_id: data.account_id,
-      category_id: data.category_id || null,
+      category_id: categoryId,
+      category_source: categorySource,
       description: data.description || null,
       notes: data.notes || null,
       destination_account_id: data.destination_account_id || null,
@@ -154,6 +164,25 @@ export function TransactionForm({
       if (result.error) { setServerError(result.error); return }
       if (payload.description && payload.category_id) {
         learnRule(payload.description, payload.category_id, null).catch(() => {})
+      }
+      // Correção manual de uma categoria pré-existente → propaga pro
+      // histórico. Fire-and-forget: não bloqueia o fechamento do form.
+      if (
+        payload.category_id &&
+        payload.description &&
+        categorySource === 'manual' &&
+        initialValues &&
+        initialValues.category_id !== payload.category_id
+      ) {
+        propagateCorrection(payload.description, payload.category_id, null, transactionId!)
+          .then((res) => {
+            if (res.updated > 0) {
+              toast.success(
+                `Categoria também atualizada em ${res.updated} transação${res.updated > 1 ? 'ões' : ''} antiga${res.updated > 1 ? 's' : ''} parecida${res.updated > 1 ? 's' : ''}.`
+              )
+            }
+          })
+          .catch(() => {})
       }
       onSuccess()
       return
@@ -349,13 +378,21 @@ export function TransactionForm({
               {!suggesting && aiSuggestion && (
                 <span className={cn(
                   'text-xs px-2 py-0.5 rounded-full font-medium',
-                  aiSuggestion.source === 'rule'
-                    ? 'bg-blue-50 text-blue-600'
-                    : aiSuggestion.source === 'keyword'
-                      ? 'bg-amber-50 text-amber-600'
-                      : 'bg-purple-50 text-purple-600'
+                  aiSuggestion.source === 'auto'
+                    ? 'bg-emerald-50 text-emerald-600'
+                    : aiSuggestion.source === 'rule'
+                      ? 'bg-blue-50 text-blue-600'
+                      : aiSuggestion.source === 'keyword'
+                        ? 'bg-amber-50 text-amber-600'
+                        : 'bg-purple-50 text-purple-600'
                 )}>
-                  {aiSuggestion.source === 'rule' ? '✓ Regra' : aiSuggestion.source === 'keyword' ? '🔍 Sugestão' : '✨ IA'}
+                  {aiSuggestion.source === 'auto'
+                    ? '✓ Auto'
+                    : aiSuggestion.source === 'rule'
+                      ? '✓ Regra'
+                      : aiSuggestion.source === 'keyword'
+                        ? '🔍 Sugestão'
+                        : '✨ IA'}
                 </span>
               )}
             </div>
