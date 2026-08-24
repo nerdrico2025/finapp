@@ -1,5 +1,6 @@
 'use server'
 
+import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 
 // Helper: acessa tabelas não incluídas nos tipos gerados ainda
@@ -15,8 +16,13 @@ export interface CategorySuggestion {
   category_name: string
   description_suggestion: string
   confidence: 'high' | 'medium' | 'low'
-  source: 'rule' | 'ai' | 'keyword'
+  source: 'rule' | 'ai' | 'keyword' | 'auto'
 }
+
+// Número de confirmações consistentes (mesmo padrão → mesma categoria) a
+// partir do qual a transação é categorizada automaticamente, sem exigir
+// confirmação manual do usuário. Fácil de ajustar depois.
+const AUTO_APPLY_CONFIRM_THRESHOLD = 3
 
 interface CategoryOption {
   id: string
@@ -45,9 +51,9 @@ async function lookupRule(
   pattern: string,
   entityId: string | null,
   userId: string,
-): Promise<{ category_id: string; match_count: number } | null> {
+): Promise<{ category_id: string; match_count: number; confirm_count: number } | null> {
   let query = table(supabase, 'category_rules')
-    .select('id, category_id, match_count')
+    .select('id, category_id, match_count, confirm_count')
     .eq('user_id', userId)
     .eq('pattern', pattern)
 
@@ -59,7 +65,31 @@ async function lookupRule(
 
   const { data } = await query.limit(1).single()
   if (!data) return null
-  return { category_id: data.category_id, match_count: data.match_count }
+  // confirm_count pode não existir ainda (coluna adicionada em migration
+  // separada) — trata como 1 confirmação implícita até a migration rodar.
+  return { category_id: data.category_id, match_count: data.match_count, confirm_count: data.confirm_count ?? 1 }
+}
+
+async function incrementConfirmCount(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  pattern: string,
+  entityId: string | null,
+  userId: string,
+): Promise<void> {
+  let query = table(supabase, 'category_rules')
+    .select('id, confirm_count')
+    .eq('user_id', userId)
+    .eq('pattern', pattern)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+  else query = query.is('entity_id', null)
+
+  const { data } = await query.limit(1).single()
+  if (!data) return
+
+  await table(supabase, 'category_rules')
+    .update({ confirm_count: (data.confirm_count ?? 1) + 1, updated_at: new Date().toISOString() })
+    .eq('id', data.id)
 }
 
 async function incrementMatchCount(
@@ -220,6 +250,11 @@ async function callDeepSeek(
     })
 
     if (!resp.ok) {
+      // Não propaga erro pro client (sugestão nunca deve travar o form), mas
+      // registra no log do servidor — sem isso, falhas de billing/API ficam
+      // invisíveis e o app cai silenciosamente pro fallback de palavras-chave.
+      const errBody = await resp.text().catch(() => '')
+      console.error(`[ai-categorization] DeepSeek respondeu ${resp.status}: ${errBody.slice(0, 300)}`)
       return { category_id: null, description_suggestion: description, confidence: 'low' }
     }
 
@@ -243,8 +278,9 @@ async function callDeepSeek(
       description_suggestion: parsed.description_suggestion ?? description,
       confidence,
     }
-  } catch {
+  } catch (err) {
     // Network timeout, JSON parse error, etc. — never propagate to caller
+    console.error('[ai-categorization] Falha ao chamar DeepSeek:', err instanceof Error ? err.message : err)
     return { category_id: null, description_suggestion: description, confidence: 'low' }
   }
 }
@@ -295,7 +331,7 @@ export async function suggestCategory(
         category_name: cat?.name ?? '',
         description_suggestion: description,
         confidence: 'high',
-        source: 'rule',
+        source: rule.confirm_count >= AUTO_APPLY_CONFIRM_THRESHOLD ? 'auto' : 'rule',
       }
     }
 
@@ -341,7 +377,8 @@ export async function suggestCategory(
       confidence: aiResult.confidence,
       source: 'ai',
     }
-  } catch {
+  } catch (err) {
+    console.error('[ai-categorization] suggestCategory falhou:', err instanceof Error ? err.message : err)
     return fallback
   }
 }
@@ -368,7 +405,14 @@ export async function learnRule(
     const existing = await lookupRule(supabase, pattern, entityId, user.id)
     if (existing) {
       if (existing.category_id !== categoryId) {
-        // Usuário escolheu categoria diferente da regra → atualiza
+        // Usuário corrigiu para uma categoria diferente da regra aprendida →
+        // quebra de confiança. Decisão: zera match_count E confirm_count (não
+        // apenas decrementa) porque o histórico acumulado media confiança na
+        // categoria ANTERIOR — ele não é um sinal válido para a categoria
+        // nova, então recomeça do zero (1 = esta própria confirmação). Isso
+        // também garante que uma regra que estava auto-aplicando (confirm_count
+        // >= AUTO_APPLY_CONFIRM_THRESHOLD) e foi corrigida volte a pedir
+        // confirmação manual até acumular confiança de novo.
         let q = table(supabase, 'category_rules')
           .select('id')
           .eq('user_id', user.id)
@@ -378,11 +422,12 @@ export async function learnRule(
         const { data: row } = await q.limit(1).single()
         if (row) {
           await table(supabase, 'category_rules')
-            .update({ category_id: categoryId, match_count: 1, updated_at: new Date().toISOString() })
+            .update({ category_id: categoryId, match_count: 1, confirm_count: 1, updated_at: new Date().toISOString() })
             .eq('id', row.id)
         }
       } else {
         await incrementMatchCount(supabase, pattern, entityId, user.id)
+        await incrementConfirmCount(supabase, pattern, entityId, user.id)
       }
       return
     }
@@ -394,8 +439,110 @@ export async function learnRule(
       pattern,
       category_id: categoryId,
       match_count: 1,
+      confirm_count: 1,
     })
-  } catch {
+  } catch (err) {
     // Falhas silenciosas — aprendizado é best-effort
+    console.error('[ai-categorization] learnRule falhou:', err instanceof Error ? err.message : err)
+  }
+}
+
+// ─── Propagação retroativa de correções ────────────────────────────────────────
+
+// Transações mais antigas que isso não são alcançadas pela propagação — reduz
+// o risco de tocar em decisões desatualizadas (ex.: o usuário mudou de
+// trabalho/endereço e o mesmo texto de descrição passou a significar outra
+// coisa) e mantém a operação rápida mesmo em contas com muito histórico.
+const PROPAGATION_LOOKBACK_MONTHS = 12
+
+// Fontes que indicam que a categoria NUNCA foi revisada por um humano — só
+// essas são elegíveis para serem sobrescritas pela correção retroativa.
+// 'manual' e 'rule'/'auto' representam decisões já validadas (um clique
+// humano direto, ou confiança acumulada de confirmações passadas) e nunca
+// são tocadas aqui. 'propagated' entra na lista para que uma propagação
+// anterior possa ser corrigida por uma nova, sem travar em um estado antigo.
+const UNREVIEWED_SOURCES = ['ai', 'keyword', 'propagated'] as const
+
+export interface PropagationResult {
+  updated: number
+}
+
+/**
+ * Quando o usuário corrige manualmente a categoria de uma transação, aplica
+ * a mesma categoria em outras transações passadas (mesmo usuário, mesmo
+ * padrão de descrição normalizado) que ainda não foram revisadas por um
+ * humano — nunca sobrescreve algo que o próprio usuário já confirmou/ajustou.
+ *
+ * Fingerprint de "mesmo padrão": reaproveita normalizeDescription(), a mesma
+ * lógica usada pelo Passo 1 (category_rules). Decisão deliberada de NÃO
+ * reforçar o fingerprint com valor/data: usar a mesma definição de "padrão"
+ * em todo o app evita que uma transação corrigida deixe de bater com a
+ * própria regra aprendida que a originou, o que seria confuso e mais
+ * arriscado do que o ganho de precisão de um fingerprint mais complexo.
+ *
+ * Roda como Server Action separada, chamada pelo client sem await (mesmo
+ * padrão já usado por learnRule) — não bloqueia o salvamento da correção.
+ */
+export async function propagateCorrection(
+  description: string,
+  categoryId: string,
+  entityId: string | null,
+  excludeTransactionId: string,
+): Promise<PropagationResult> {
+  try {
+    const supabase = await createClient()
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return { updated: 0 }
+
+    const pattern = normalizeDescription(description)
+    if (!pattern) return { updated: 0 }
+
+    const cutoff = new Date()
+    cutoff.setMonth(cutoff.getMonth() - PROPAGATION_LOOKBACK_MONTHS)
+    const cutoffStr = cutoff.toISOString().split('T')[0]
+
+    let query = supabase
+      .from('transactions')
+      .select('id, description, category_id, category_source')
+      .eq('user_id', user.id)
+      .neq('id', excludeTransactionId)
+      .neq('type', 'transfer')
+      .eq('is_mirror', false)
+      .gte('date', cutoffStr)
+      .in('category_source', UNREVIEWED_SOURCES)
+
+    if (entityId) query = query.eq('entity_id', entityId)
+
+    const { data: candidates, error: selectError } = await query
+    if (selectError) {
+      console.error('[ai-categorization] propagateCorrection select falhou:', selectError.message)
+      return { updated: 0 }
+    }
+    if (!candidates || candidates.length === 0) return { updated: 0 }
+
+    // Filtra em memória usando a MESMA normalização do Tier 1 — evita duplicar
+    // (e divergir de) a lógica de normalização em SQL.
+    const ids = candidates
+      .filter((t) => t.category_id !== categoryId && normalizeDescription(t.description ?? '') === pattern)
+      .map((t) => t.id)
+
+    if (ids.length === 0) return { updated: 0 }
+
+    const { error: updateError } = await supabase
+      .from('transactions')
+      .update({ category_id: categoryId, category_source: 'propagated' })
+      .in('id', ids)
+
+    if (updateError) {
+      console.error('[ai-categorization] propagateCorrection update falhou:', updateError.message)
+      return { updated: 0 }
+    }
+
+    revalidatePath('/transactions')
+    revalidatePath('/dashboard')
+    return { updated: ids.length }
+  } catch (err) {
+    console.error('[ai-categorization] propagateCorrection falhou:', err instanceof Error ? err.message : err)
+    return { updated: 0 }
   }
 }
