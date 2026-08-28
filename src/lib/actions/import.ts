@@ -7,6 +7,9 @@ export interface ParsedRow {
   type: 'income' | 'expense'
   raw?: string
   error?: string
+  /** FITID do OFX/QFX — identificador único da transação dado pelo banco.
+   *  Só existe para esse formato; usado como camada 1 de deduplicação. */
+  bankTransactionId?: string
 }
 
 // ─── PDF heuristics ───────────────────────────────────────────────────────────

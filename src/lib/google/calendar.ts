@@ -1,7 +1,20 @@
 import { createClient } from '@/lib/supabase/server'
-import { formatCurrency } from '@/lib/utils/format'
+import { formatCurrency, formatDate } from '@/lib/utils/format'
+import { subtractDays, nextOccurrenceFrom } from '@/lib/utils/recurrence'
+import type { RecurrenceFrequency } from '@/types'
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3'
+
+// RRULE FREQ por frequência de bill_alerts — 'biweekly' e 'quarterly' não têm
+// FREQ próprio no iCal, então usam INTERVAL sobre WEEKLY/MONTHLY.
+const RRULE_FREQ: Record<RecurrenceFrequency, string> = {
+  daily: 'FREQ=DAILY',
+  weekly: 'FREQ=WEEKLY',
+  biweekly: 'FREQ=WEEKLY;INTERVAL=2',
+  monthly: 'FREQ=MONTHLY',
+  quarterly: 'FREQ=MONTHLY;INTERVAL=3',
+  yearly: 'FREQ=YEARLY',
+}
 
 async function getValidAccessToken(userId: string): Promise<string | null> {
   const supabase = await createClient()
@@ -57,9 +70,12 @@ function getNextDateForDay(day: number): string {
   return candidate.toISOString().split('T')[0]
 }
 
-function buildRRule(endDate?: string | null): string {
-  if (!endDate) return 'RRULE:FREQ=MONTHLY'
-  return `RRULE:FREQ=MONTHLY;UNTIL=${endDate.replace(/-/g, '')}`
+function buildRRule(frequency: RecurrenceFrequency, endDate?: string | null): string {
+  const freq = RRULE_FREQ[frequency]
+  if (!endDate) return `RRULE:${freq}`
+  // UNTIL precisa do mesmo formato DATE-TIME do DTSTART (nossos eventos têm
+  // hora, não são all-day) — daí o T235959Z, senão o Google ignora o limite.
+  return `RRULE:${freq};UNTIL=${endDate.replace(/-/g, '')}T235959Z`
 }
 
 async function upsertSingleEvent(
@@ -76,6 +92,15 @@ async function upsertSingleEvent(
     start: { dateTime: `${date}T09:00:00`, timeZone: 'America/Sao_Paulo' },
     end: { dateTime: `${date}T09:30:00`, timeZone: 'America/Sao_Paulo' },
     recurrence: [rrule],
+    // method: 'popup' é o que o app do Google Calendar transforma em
+    // notificação push no celular (diferente de 'email', que só manda
+    // e-mail) — useDefault: false porque senão o Google aplica os lembretes
+    // padrão da agenda do usuário por cima, o que ele não escolheu aqui.
+    // minutes: 0 = a notificação dispara no horário do próprio evento
+    // (09:00). Cada alerta já vira DOIS eventos (ver upsertCalendarEvents):
+    // um no dia "N dias antes" e outro no dia do vencimento — é essa
+    // distância entre os dois eventos que dá a antecedência, não o lembrete
+    // em si, então não precisa de minutos extras aqui.
     reminders: {
       useDefault: false,
       overrides: [{ method: 'popup', minutes: 0 }],
@@ -104,7 +129,11 @@ export async function upsertCalendarEvents(params: {
   userId: string
   name: string
   amount?: number | null
-  dayOfMonth: number
+  frequency: RecurrenceFrequency
+  /** Usado quando frequency === 'monthly' — mesmo comportamento de sempre. */
+  dayOfMonth?: number | null
+  /** Âncora usada para as demais frequências (bill_alerts.next_date). */
+  nextDate?: string | null
   daysBefore: number
   endDate?: string | null
   existingReminderEventId?: string | null
@@ -113,17 +142,34 @@ export async function upsertCalendarEvents(params: {
   const accessToken = await getValidAccessToken(params.userId)
   if (!accessToken) return { reminderEventId: null, dueEventId: null }
 
-  const reminderDay = params.dayOfMonth - params.daysBefore
-  const reminderDate = getNextDateForDay(reminderDay)
-  const dueDate = getNextDateForDay(params.dayOfMonth)
-  const rrule = buildRRule(params.endDate)
+  // Mensal continua ancorado em day_of_month (comportamento pré-existente,
+  // intocado); as demais frequências ancoram em next_date e avançam pela
+  // mesma lógica de recorrência usada no resto do app.
+  const isMonthlyByDay = params.frequency === 'monthly' && params.dayOfMonth != null
+
+  const dueDate = isMonthlyByDay
+    ? getNextDateForDay(params.dayOfMonth as number)
+    : params.nextDate
+      ? nextOccurrenceFrom(params.nextDate, params.frequency)
+      : null
+
+  if (!dueDate) return { reminderEventId: null, dueEventId: null }
+
+  const reminderDate = isMonthlyByDay
+    ? getNextDateForDay((params.dayOfMonth as number) - params.daysBefore)
+    : subtractDays(dueDate, params.daysBefore)
+
+  const rrule = buildRRule(params.frequency, params.endDate)
   const amountStr = params.amount ? ` — ${formatCurrency(params.amount)}` : ''
+  const dueLabel = isMonthlyByDay
+    ? `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`
+    : `Vence em ${formatDate(dueDate)}. Alerta via FinApp.`
 
   const [reminderEventId, dueEventId] = await Promise.all([
     upsertSingleEvent(
       accessToken,
       `🔔 Lembrete: ${params.name}`,
-      `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`,
+      dueLabel,
       reminderDate,
       rrule,
       params.existingReminderEventId,
@@ -131,7 +177,7 @@ export async function upsertCalendarEvents(params: {
     upsertSingleEvent(
       accessToken,
       `📅 Vence hoje: ${params.name}${amountStr}`,
-      `Conta vence dia ${params.dayOfMonth}. Alerta via FinApp.`,
+      dueLabel,
       dueDate,
       rrule,
       params.existingDueEventId,

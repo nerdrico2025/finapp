@@ -4,11 +4,10 @@ export const metadata: Metadata = { title: 'Dashboard' }
 import Link from 'next/link'
 import {
   TrendingUp, TrendingDown, Wallet, ArrowLeftRight,
-  CalendarClock, Target, ArrowRight, RefreshCw,
+  CalendarClock, Target, ArrowRight,
   Building2, BarChart3, FileBarChart, Layers,
   Settings, CheckCircle2, Circle,
 } from 'lucide-react'
-import { processRecurring } from '@/lib/actions/recurring'
 import { getTotalBalance } from '@/lib/actions/accounts'
 import { getTransactions } from '@/lib/actions/transactions'
 import { getUpcomingAlerts } from '@/lib/actions/billAlerts'
@@ -79,10 +78,6 @@ export default async function DashboardPage({
   const isBusinessEntity = activeEntity?.type === 'business'
 
   // ── Data ──────────────────────────────────────────────────────────────────
-  // processRecurring must complete before reading balances to avoid a race
-  // condition where getTotalBalance reads mid-update account balances
-  const { generated } = await processRecurring()
-
   const [
     { total: totalBalance },
     summary,
@@ -165,12 +160,6 @@ export default async function DashboardPage({
         </div>
         <div className="flex items-center gap-3">
           <MonthNavigator month={month} year={year} basePath="/dashboard" />
-          {generated > 0 && (
-            <span className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-              <RefreshCw className="w-3.5 h-3.5" />
-              {generated} recorrência{generated > 1 ? 's' : ''} gerada{generated > 1 ? 's' : ''}
-            </span>
-          )}
         </div>
       </div>
 

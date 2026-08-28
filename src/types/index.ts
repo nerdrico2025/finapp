@@ -189,6 +189,7 @@ export interface Database {
           tags: string[] | null
           attachments: string[] | null
           import_hash: string | null
+          bank_transaction_id: string | null
           created_at: string
           updated_at: string
         }
@@ -213,6 +214,7 @@ export interface Database {
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null
+          bank_transaction_id?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -234,6 +236,7 @@ export interface Database {
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null
+          bank_transaction_id?: string | null
           updated_at?: string
         }
         Relationships: never[]
@@ -305,7 +308,14 @@ export interface Database {
           entity_id: string | null
           name: string
           amount: number | null
-          day_of_month: number
+          type: 'income' | 'expense'
+          frequency: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
+          /** Só relevante quando frequency = 'monthly' — ver next_date para as demais. */
+          day_of_month: number | null
+          /** Âncora de recorrência para frequency != 'monthly' (mesmo espírito de
+           *  recurring_rules.next_date). NULL para alertas mensais que ainda usam
+           *  só day_of_month. */
+          next_date: string | null
           days_before: number
           is_active: boolean
           end_date: string | null
@@ -320,7 +330,10 @@ export interface Database {
           entity_id?: string | null
           name: string
           amount?: number | null
-          day_of_month: number
+          type?: 'income' | 'expense'
+          frequency?: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
+          day_of_month?: number | null
+          next_date?: string | null
           days_before?: number
           is_active?: boolean
           end_date?: string | null
@@ -333,7 +346,10 @@ export interface Database {
           entity_id?: string | null
           name?: string
           amount?: number | null
-          day_of_month?: number
+          type?: 'income' | 'expense'
+          frequency?: 'daily' | 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'yearly'
+          day_of_month?: number | null
+          next_date?: string | null
           days_before?: number
           is_active?: boolean
           end_date?: string | null
