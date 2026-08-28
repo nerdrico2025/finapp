@@ -161,7 +161,19 @@ function keywordFallback(description: string, categories: CategoryOption[]): str
   return null
 }
 
-// ─── PASSO 3 — DeepSeek ───────────────────────────────────────────────────────
+// ─── PASSO 3 — IA via OpenRouter ────────────────────────────────────────────────
+
+// Modelo escolhido: google/gemini-flash-1.5-8b. Critérios (esta chamada roda em
+// onBlur do formulário de transação, então latência baixa é mandatório, e roda
+// em toda transação nova, então custo por chamada importa mais que qualidade de
+// geração de texto longo): é um dos modelos mais rápidos e baratos disponíveis
+// na OpenRouter (~US$0,0375 / 1M tokens de entrada), e para uma classificação
+// curta (escolher 1 de N categorias fixas) sua qualidade é suficiente — não
+// precisamos da capacidade de um modelo maior como gpt-4o-mini para essa tarefa.
+const OPENROUTER_MODEL = 'google/gemini-flash-1.5-8b'
+// Reaproveita a mesma env var já usada em toda a base (callbacks OAuth, Stripe)
+// para identificar a URL pública do app — evita cravar um domínio fixo aqui.
+const OPENROUTER_APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
 
 interface RecentTransaction {
   description: string | null
@@ -195,13 +207,13 @@ async function fetchRecentTransactions(
   })
 }
 
-async function callDeepSeek(
+async function callOpenRouter(
   description: string,
   amount: number | undefined,
   categories: CategoryOption[],
   recentTx: RecentTransaction[],
 ): Promise<{ category_id: string | null; description_suggestion: string; confidence: 'high' | 'medium' | 'low' }> {
-  const apiKey = process.env.DEEPSEEK_API_KEY
+  const apiKey = process.env.OPENROUTER_API_KEY
   if (!apiKey || apiKey === 'sk-') {
     return { category_id: null, description_suggestion: description, confidence: 'low' }
   }
@@ -225,14 +237,16 @@ async function callDeepSeek(
     `Qual categoria melhor se encaixa? Responda SOMENTE o JSON pedido.`
 
   try {
-    const resp = await fetch('https://api.deepseek.com/chat/completions', {
+    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
+        'HTTP-Referer': OPENROUTER_APP_URL,
+        'X-Title': 'FinApp',
       },
       body: JSON.stringify({
-        model: 'deepseek-v4-flash',
+        model: OPENROUTER_MODEL,
         max_tokens: 200,
         temperature: 0.1,
         messages: [
@@ -254,7 +268,7 @@ async function callDeepSeek(
       // registra no log do servidor — sem isso, falhas de billing/API ficam
       // invisíveis e o app cai silenciosamente pro fallback de palavras-chave.
       const errBody = await resp.text().catch(() => '')
-      console.error(`[ai-categorization] DeepSeek respondeu ${resp.status}: ${errBody.slice(0, 300)}`)
+      console.error(`[ai-categorization] OpenRouter respondeu ${resp.status}: ${errBody.slice(0, 300)}`)
       return { category_id: null, description_suggestion: description, confidence: 'low' }
     }
 
@@ -280,7 +294,7 @@ async function callDeepSeek(
     }
   } catch (err) {
     // Network timeout, JSON parse error, etc. — never propagate to caller
-    console.error('[ai-categorization] Falha ao chamar DeepSeek:', err instanceof Error ? err.message : err)
+    console.error('[ai-categorization] Falha ao chamar OpenRouter:', err instanceof Error ? err.message : err)
     return { category_id: null, description_suggestion: description, confidence: 'low' }
   }
 }
@@ -335,7 +349,7 @@ export async function suggestCategory(
       }
     }
 
-    // ── PASSO 2: palavras-chave + DeepSeek (precisam das categorias do usuário) ─
+    // ── PASSO 2: palavras-chave + IA (OpenRouter, precisam das categorias do usuário) ─
     let catOptions = categories ?? []
     if (catOptions.length === 0) {
       // RLS já filtra pelo usuário autenticado — não precisa de filtro manual
@@ -346,10 +360,10 @@ export async function suggestCategory(
       catOptions = (data ?? []) as CategoryOption[]
     }
 
-    const apiKey = process.env.DEEPSEEK_API_KEY
-    const deepseekEnabled = !!apiKey && apiKey !== 'sk-' && apiKey.length > 10
-    const recentTx = deepseekEnabled ? await fetchRecentTransactions(supabase, user.id, entityId) : []
-    const aiResult = await callDeepSeek(description, amount, catOptions, recentTx)
+    const apiKey = process.env.OPENROUTER_API_KEY
+    const aiEnabled = !!apiKey && apiKey !== 'sk-' && apiKey.length > 10
+    const recentTx = aiEnabled ? await fetchRecentTransactions(supabase, user.id, entityId) : []
+    const aiResult = await callOpenRouter(description, amount, catOptions, recentTx)
 
     if (!aiResult.category_id) {
       // ── PASSO 3: fallback por palavras-chave embutidas ─────────────────────

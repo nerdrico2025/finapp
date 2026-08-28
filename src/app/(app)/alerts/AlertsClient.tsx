@@ -17,9 +17,18 @@ import {
 } from '@/lib/actions/billAlerts'
 import { toast } from 'sonner'
 import { BillAlertForm } from '@/components/forms/BillAlertForm'
-import { formatCurrency } from '@/lib/utils/format'
+import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { BillAlert } from '@/types'
+
+const FREQUENCY_LABEL: Record<BillAlert['frequency'], string> = {
+  daily: 'Todo dia',
+  weekly: 'Toda semana',
+  biweekly: 'A cada 2 semanas',
+  monthly: 'Todo mês',
+  quarterly: 'A cada 3 meses',
+  yearly: 'Todo ano',
+}
 
 type Modal =
   | { type: 'closed' }
@@ -312,14 +321,20 @@ function AlertItem({
         <div className="flex items-center gap-2 mt-0.5 text-xs text-gray-400">
           <span className="flex items-center gap-1">
             <CalendarClock className="w-3 h-3" />
-            Dia {alert.day_of_month} de cada mês
+            {alert.frequency === 'monthly' && alert.day_of_month != null
+              ? `Dia ${alert.day_of_month} de cada mês`
+              : alert.next_date
+                ? `${FREQUENCY_LABEL[alert.frequency]} · próx. ${formatDate(alert.next_date)}`
+                : FREQUENCY_LABEL[alert.frequency]}
           </span>
           <span>·</span>
           <span>Avisar {alert.days_before}d antes</span>
           {alert.amount != null && (
             <>
               <span>·</span>
-              <span className="text-red-500 font-medium">{formatCurrency(alert.amount)}</span>
+              <span className={cn('font-medium', alert.type === 'income' ? 'text-emerald-600' : 'text-red-500')}>
+                {alert.type === 'income' ? '+' : '−'}{formatCurrency(alert.amount)}
+              </span>
             </>
           )}
         </div>

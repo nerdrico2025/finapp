@@ -13,6 +13,18 @@
 export const DUP_DATE_WINDOW_DAYS = 4
 export const DUP_SCORE_THRESHOLD = 70
 
+// Camada 2 da detecção de duplicatas na importação: dentro desta janela mais
+// apertada, valor igual + data próxima já bastam para suspeitar de duplicata,
+// mesmo sem nenhuma outra corroboração (descrição parecida, mesma categoria).
+// Cobre o caso mais comum de falso-negativo na importação de extratos: a
+// mesma transação aparece com descrições diferentes entre importações (ex.:
+// "PIX pendente" vs. "PIX recebido de João", ou formatação diferente do
+// banco) — description similarity sozinha não pega esse caso. Fora dessa
+// janela (2–4 dias), mantemos a exigência de corroboração para não gerar
+// falso positivo em despesas recorrentes de mesmo valor (ex.: duas idas ao
+// mesmo mercado na mesma semana).
+export const DUP_TIGHT_WINDOW_DAYS = 1
+
 // Common Portuguese filler + bank-statement noise that shouldn't drive matches.
 const STOPWORDS = new Set([
   'de', 'da', 'do', 'dos', 'das', 'e', 'a', 'o', 'os', 'as', 'para', 'por',
@@ -139,9 +151,16 @@ export function scoreDuplicate(
     reasons.push('Mesma categoria')
   }
 
-  // Cap pure value+date matches below the threshold so they never flag alone.
   if (!corroborated) {
-    score = Math.min(score, DUP_SCORE_THRESHOLD - 5)
+    if (days <= DUP_TIGHT_WINDOW_DAYS) {
+      // Camada 2: dentro da janela apertada, valor + data sozinhos já cruzam
+      // o limiar — ver comentário de DUP_TIGHT_WINDOW_DAYS acima.
+      score = Math.max(score, DUP_SCORE_THRESHOLD)
+    } else {
+      // Fora da janela apertada, cap pure value+date matches below the
+      // threshold so they never flag alone.
+      score = Math.min(score, DUP_SCORE_THRESHOLD - 5)
+    }
   }
 
   return { score: Math.min(score, 100), reasons }

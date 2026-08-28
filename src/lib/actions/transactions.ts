@@ -57,6 +57,8 @@ export interface CSVRow {
   account_id: string
   category_id?: string | null
   category_source?: CategorySource | null
+  /** FITID do OFX/QFX — ver findKnownBankTransactionIds. */
+  bank_transaction_id?: string | null
 }
 
 export type TransactionWithRelations = {
@@ -78,6 +80,7 @@ export type TransactionWithRelations = {
   is_mirror: boolean
   tags: string[] | null
   import_hash: string | null
+  bank_transaction_id: string | null
   created_at: string
   updated_at: string
   account: { id: string; name: string; color: string | null } | null
@@ -543,13 +546,42 @@ export interface ImportDupInput {
 }
 
 /**
- * For each row about to be imported, find a likely duplicate — either an
- * already-saved transaction or an earlier row in the same file. Returns an
- * array aligned by index with the input (null where no duplicate is suspected),
- * so the UI can ask the user to confirm before importing.
+ * Camada 1 de deduplicação na importação (alta confiança): para linhas com
+ * FITID (OFX/QFX), verifica quais já existem no banco para o usuário atual.
+ * Essas nunca chegam a aparecer na pré-visualização — são puladas direto.
+ */
+export async function findKnownBankTransactionIds(ids: string[]): Promise<string[]> {
+  const uniqueIds = Array.from(new Set(ids.filter(Boolean)))
+  if (uniqueIds.length === 0) return []
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const { data } = await supabase
+    .from('transactions')
+    .select('bank_transaction_id')
+    .eq('user_id', user.id)
+    .in('bank_transaction_id', uniqueIds)
+
+  return (data ?? [])
+    .map((r: { bank_transaction_id: string | null }) => r.bank_transaction_id)
+    .filter((id): id is string => !!id)
+}
+
+/**
+ * Camada 2 de deduplicação na importação (confiança média): para cada linha
+ * sem correspondência na camada 1 (ou de formatos sem FITID, como CSV/XLSX/PDF),
+ * busca uma transação já salva (mesma conta) ou uma linha anterior no próprio
+ * arquivo que pareça ser a mesma. Nunca pula a importação sozinha — o resultado
+ * só serve para desmarcar a linha por padrão na pré-visualização e mostrar o
+ * motivo; o usuário decide se confirma.
  */
 export async function findImportDuplicates(
-  rows: ImportDupInput[]
+  rows: ImportDupInput[],
+  accountId: string
 ): Promise<(DuplicateMatch | null)[]> {
   const result: (DuplicateMatch | null)[] = rows.map(() => null)
   if (rows.length === 0) return result
@@ -581,6 +613,9 @@ export async function findImportDuplicates(
     .eq('is_mirror', false)
     .gte('date', from)
     .lte('date', to)
+  // Mesma conta: valor+data batendo em contas diferentes não é sinal de
+  // duplicata (ex.: mesma fatura paga da corrente e refletida na poupança).
+  if (accountId) query = query.eq('account_id', accountId)
   if (entityId) query = query.eq('entity_id', entityId)
 
   const { data } = await query
@@ -684,6 +719,23 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
       const type: TransactionType = row.amount >= 0 ? 'income' : 'expense'
       const amount = Math.abs(row.amount)
 
+      // Camada 1 (alta confiança): re-checa o FITID no momento de salvar —
+      // fecha a janela de corrida entre a pré-visualização (que já filtrou
+      // pelo mesmo critério) e o clique em "Importar".
+      if (row.bank_transaction_id) {
+        const { data: existingByFitid } = await supabase
+          .from('transactions')
+          .select('id')
+          .eq('user_id', user.id)
+          .eq('bank_transaction_id', row.bank_transaction_id)
+          .maybeSingle()
+
+        if (existingByFitid) {
+          duplicates++
+          continue
+        }
+      }
+
       const importHash = generateImportHash(user.id, amount, row.date, row.description)
 
       const { data: existing } = await supabase
@@ -704,6 +756,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         account_id: row.account_id,
         category_id: row.category_id ?? null,
         category_source: row.category_id ? (row.category_source ?? 'manual') : null,
+        bank_transaction_id: row.bank_transaction_id ?? null,
         type,
         amount,
         description: row.description,

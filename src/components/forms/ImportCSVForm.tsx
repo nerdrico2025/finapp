@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react'
 import {
   Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus,
 } from 'lucide-react'
-import { importTransactions, findImportDuplicates, type CSVRow, type DuplicateMatch } from '@/lib/actions/transactions'
+import { importTransactions, findImportDuplicates, findKnownBankTransactionIds, type CSVRow, type DuplicateMatch } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
@@ -35,6 +35,8 @@ interface EditableRow {
   duplicate?: DuplicateMatch | null
   error?: string
   raw: string
+  /** FITID do OFX/QFX — camada 1 de deduplicação, ver findKnownBankTransactionIds. */
+  bankTransactionId?: string | null
 }
 
 interface ImportResult {
@@ -98,6 +100,7 @@ function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
       checked: !r.error && !isBalanceRow,
       error: r.error,
       raw: r.raw ?? '',
+      bankTransactionId: r.bankTransactionId ?? null,
     }
   })
 }
@@ -257,6 +260,7 @@ function parseOFX(content: string): ParsedRow[] {
     const dtposted = tag('DTPOSTED')
     const trnamt = tag('TRNAMT')
     const memo = tag('MEMO') || tag('NAME') || tag('PAYEE') || 'Transação'
+    const fitid = tag('FITID')
     const dm = dtposted.match(/^(\d{4})(\d{2})(\d{2})/)
     const date = dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : ''
     const amount = parseFloat(trnamt.replace(',', '.')) || 0
@@ -265,6 +269,7 @@ function parseOFX(content: string): ParsedRow[] {
       type: amount >= 0 ? 'income' : 'expense',
       raw: block.trim(),
       error: date ? undefined : `Data inválida: ${dtposted}`,
+      bankTransactionId: fitid || undefined,
     })
   }
   return rows
@@ -326,6 +331,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [importing, setImporting] = useState(false)
   const [suggestingAi, setSuggestingAi] = useState(false)
   const [checkingDuplicates, setCheckingDuplicates] = useState(false)
+  const [autoSkippedCount, setAutoSkippedCount] = useState(0)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
   const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
@@ -371,6 +377,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setParseError(null)
     setEditableRows([])
     setResult(null)
+    setAutoSkippedCount(0)
     setStep('parsing')
 
     try {
@@ -445,11 +452,32 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const text = await file.text()
         const rawParsed = parseOFX(text)
         if (!rawParsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-        const parsed = parsedToEditable(rawParsed)
+
+        // Camada 1 — FITID: transações que o banco já identificou como as
+        // mesmas de uma importação anterior são puladas direto, sem nem
+        // aparecer na pré-visualização (alta confiança, não precisa de
+        // confirmação do usuário).
+        const idsToCheck = Array.from(new Set(
+          rawParsed.map(r => r.bankTransactionId).filter((id): id is string => !!id)
+        ))
+        let knownIds: Set<string> = new Set()
+        if (idsToCheck.length > 0) {
+          try { knownIds = new Set(await findKnownBankTransactionIds(idsToCheck)) } catch { /* segue sem essa camada se a checagem falhar */ }
+        }
+        const filteredParsed = rawParsed.filter(r => !(r.bankTransactionId && knownIds.has(r.bankTransactionId)))
+        const skippedKnown = rawParsed.length - filteredParsed.length
+
+        if (!filteredParsed.length) {
+          setParseError(`Todas as ${skippedKnown} transações do arquivo já haviam sido importadas anteriormente (mesmo identificador do banco).`)
+          setStep('idle'); return
+        }
+
+        setAutoSkippedCount(skippedKnown)
+        const parsed = parsedToEditable(filteredParsed)
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
-          runDuplicateCheck(parsed)
+        runDuplicateCheck(parsed)
       }
 
       else if (fmt === 'pdf') {
@@ -528,7 +556,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           description: r.description,
           amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
           categoryId: r.categoryId,
-        }))
+        })),
+        selectedAccount
       )
       setEditableRows(prev => {
         const next = [...prev]
@@ -583,6 +612,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
       account_id: selectedAccount,
       category_id: r.categoryId ?? null,
       category_source: r.categoryId ? r.source : null,
+      bank_transaction_id: r.bankTransactionId ?? null,
     }))
     const res = await importTransactions(valid)
 
@@ -602,6 +632,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   function reset() {
     setStep('idle'); setFormat(null); setFileName(''); setParseError(null)
     setEditableRows([]); setRawHeaders([]); setRawRows([]); setResult(null)
+    setAutoSkippedCount(0)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -812,6 +843,20 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
               <div>
                 <p className="text-sm font-semibold text-amber-800">IA categorizando automaticamente…</p>
                 <p className="text-xs text-amber-600 mt-0.5">Analisando descrições e sugerindo categorias para cada transação</p>
+              </div>
+            </div>
+          )}
+
+          {autoSkippedCount > 0 && (
+            <div className="mb-3 flex items-start gap-3 rounded-lg bg-gray-50 border border-gray-200 px-4 py-3">
+              <AlertTriangle className="w-5 h-5 text-gray-400 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-gray-700">
+                  {autoSkippedCount} transaç{autoSkippedCount > 1 ? 'ões' : 'ão'} ignorada{autoSkippedCount > 1 ? 's' : ''} automaticamente
+                </p>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Já haviam sido importadas antes (mesmo identificador dado pelo banco) — nem entraram na lista abaixo.
+                </p>
               </div>
             </div>
           )}

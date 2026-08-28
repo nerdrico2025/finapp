@@ -4,14 +4,20 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { upsertCalendarEvents, deleteCalendarEvent } from '@/lib/google/calendar'
-import type { BillAlert } from '@/types'
+import { nextOccurrenceFrom } from '@/lib/utils/recurrence'
+import type { BillAlert, RecurrenceFrequency } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BillAlertFormData {
   name: string
   amount?: number | null
-  day_of_month: number
+  type: 'income' | 'expense'
+  frequency: RecurrenceFrequency
+  /** Usado quando frequency === 'monthly' — comportamento padrão pré-existente. */
+  day_of_month?: number | null
+  /** Âncora de recorrência para as demais frequências. */
+  next_date?: string | null
   days_before: number
   end_date?: string | null
   is_active?: boolean
@@ -42,6 +48,27 @@ function daysUntil(dateStr: string): number {
   return Math.round((target.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
 }
 
+/**
+ * Próxima ocorrência de um alerta, cobrindo as 6 frequências: mensal continua
+ * ancorado em day_of_month (comportamento pré-existente, intocado); as
+ * demais avançam a partir de next_date pela mesma lógica de recorrência usada
+ * no resto do app. Retorna null só se o alerta não tiver âncora nenhuma
+ * (dado inconsistente — não deveria acontecer via o formulário atual).
+ */
+function getNextOccurrence(alert: {
+  frequency: string
+  day_of_month: number | null
+  next_date: string | null
+}): string | null {
+  if (alert.frequency === 'monthly' && alert.day_of_month != null) {
+    return getNextDueDate(alert.day_of_month)
+  }
+  if (alert.next_date) {
+    return nextOccurrenceFrom(alert.next_date, alert.frequency as RecurrenceFrequency)
+  }
+  return null
+}
+
 // ─── Actions ──────────────────────────────────────────────────────────────────
 
 export async function getBillAlerts() {
@@ -56,7 +83,11 @@ export async function getBillAlerts() {
     .from('bill_alerts')
     .select('*')
     .eq('user_id', user.id)
-    .order('day_of_month')
+    // day_of_month só existe para frequency='monthly' — ordenar por ele
+    // deixaria os alertas de outras frequências (NULL) fora de ordem. Nome
+    // é uma ordenação estável e previsível para qualquer frequência; a lista
+    // de "próximas ocorrências" (getUpcomingAlerts) já ordena por urgência.
+    .order('name')
 
   if (entityId) query = query.eq('entity_id', entityId)
 
@@ -81,7 +112,10 @@ export async function createBillAlert(formData: BillAlertFormData) {
     entity_id: entityId,
     name: formData.name,
     amount: formData.amount ?? null,
-    day_of_month: formData.day_of_month,
+    type: formData.type,
+    frequency: formData.frequency,
+    day_of_month: formData.frequency === 'monthly' ? formData.day_of_month : null,
+    next_date: formData.frequency === 'monthly' ? null : formData.next_date,
     days_before: formData.days_before,
     end_date: formData.end_date ?? null,
     is_active: formData.is_active ?? true,
@@ -94,7 +128,9 @@ export async function createBillAlert(formData: BillAlertFormData) {
       userId: user.id,
       name: formData.name,
       amount: formData.amount,
-      dayOfMonth: formData.day_of_month,
+      frequency: formData.frequency,
+      dayOfMonth: formData.frequency === 'monthly' ? formData.day_of_month : null,
+      nextDate: formData.frequency === 'monthly' ? null : formData.next_date,
       daysBefore: formData.days_before,
       endDate: formData.end_date,
     })
@@ -118,20 +154,35 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
 
   const { data: existing } = await supabase
     .from('bill_alerts')
-    .select('name, amount, day_of_month, days_before, end_date, google_event_id, google_reminder_event_id')
+    .select('name, amount, type, frequency, day_of_month, next_date, days_before, end_date, google_event_id, google_reminder_event_id')
     .eq('id', id)
     .eq('user_id', user.id)
     .single()
 
+  // Se a frequência está mudando, day_of_month/next_date do formData (que só
+  // manda o campo relevante pra frequência nova) já resolvem a troca — não
+  // deixa lixo do modo anterior (ex: editar de mensal pra semanal precisa
+  // "esquecer" o day_of_month antigo, não só ignorá-lo).
+  const nextFrequency = formData.frequency ?? existing?.frequency
+  const dayOfMonthUpdate = nextFrequency === 'monthly'
+    ? (formData.day_of_month !== undefined ? formData.day_of_month : existing?.day_of_month)
+    : null
+  const nextDateUpdate = nextFrequency !== 'monthly'
+    ? (formData.next_date !== undefined ? formData.next_date : existing?.next_date)
+    : null
+
   const { error } = await supabase
     .from('bill_alerts')
     .update({
-      ...(formData.name         !== undefined && { name: formData.name }),
-      ...(formData.amount       !== undefined && { amount: formData.amount }),
-      ...(formData.day_of_month !== undefined && { day_of_month: formData.day_of_month }),
-      ...(formData.days_before  !== undefined && { days_before: formData.days_before }),
-      ...(formData.end_date     !== undefined && { end_date: formData.end_date }),
-      ...(formData.is_active    !== undefined && { is_active: formData.is_active }),
+      ...(formData.name      !== undefined && { name: formData.name }),
+      ...(formData.amount    !== undefined && { amount: formData.amount }),
+      ...(formData.type      !== undefined && { type: formData.type }),
+      ...(formData.frequency !== undefined && { frequency: formData.frequency }),
+      day_of_month: dayOfMonthUpdate,
+      next_date: nextDateUpdate,
+      ...(formData.days_before !== undefined && { days_before: formData.days_before }),
+      ...(formData.end_date    !== undefined && { end_date: formData.end_date }),
+      ...(formData.is_active   !== undefined && { is_active: formData.is_active }),
     })
     .eq('id', id)
     .eq('user_id', user.id)
@@ -141,11 +192,14 @@ export async function updateBillAlert(id: string, formData: Partial<BillAlertFor
   if (existing) {
     try {
       const merged = { ...existing, ...formData }
+      const frequency = (nextFrequency ?? 'monthly') as RecurrenceFrequency
       const { reminderEventId, dueEventId } = await upsertCalendarEvents({
         userId: user.id,
         name: merged.name ?? existing.name,
         amount: merged.amount ?? existing.amount,
-        dayOfMonth: merged.day_of_month ?? existing.day_of_month,
+        frequency,
+        dayOfMonth: dayOfMonthUpdate,
+        nextDate: nextDateUpdate,
         daysBefore: merged.days_before ?? existing.days_before,
         endDate: merged.end_date ?? existing.end_date,
         existingReminderEventId: existing.google_reminder_event_id,
@@ -246,10 +300,12 @@ export async function getUpcomingAlerts(withinDays = 7): Promise<{ data: Upcomin
 
   const upcoming = alerts
     .map((alert) => {
-      const next_due_date = getNextDueDate(alert.day_of_month)
+      const next_due_date = getNextOccurrence(alert)
+      if (!next_due_date) return null
       const days_until = daysUntil(next_due_date)
       return { ...alert, next_due_date, days_until } as UpcomingAlert
     })
+    .filter((a): a is UpcomingAlert => a != null)
     .filter((a) => a.days_until >= 0 && a.days_until <= withinDays)
     .sort((a, b) => a.days_until - b.days_until)
 
