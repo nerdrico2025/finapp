@@ -2,6 +2,8 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
+import { addPeriod, nextOccurrenceFrom } from '@/lib/utils/recurrence'
+import type { RecurrenceFrequency } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -15,8 +17,8 @@ export interface TransacaoPrevista {
   category_name: string
   category_color: string
   category_icon: string
-  source: 'realizada' | 'lancada' | 'recorrente'
-  recurring_rule_id?: string
+  source: 'realizada' | 'lancada' | 'alerta'
+  bill_alert_id?: string
 }
 
 export interface BudgetPrevisao {
@@ -56,79 +58,44 @@ function periodBounds(month: number, year: number) {
   }
 }
 
-function addPeriod(dateStr: string, frequency: string): string {
-  const d = new Date(dateStr + 'T12:00:00')
-  switch (frequency) {
-    case 'daily':     d.setDate(d.getDate() + 1);         break
-    case 'weekly':    d.setDate(d.getDate() + 7);         break
-    case 'biweekly':  d.setDate(d.getDate() + 14);        break
-    case 'monthly':   d.setMonth(d.getMonth() + 1);       break
-    case 'quarterly': d.setMonth(d.getMonth() + 3);       break
-    case 'yearly':    d.setFullYear(d.getFullYear() + 1); break
-  }
-  return d.toISOString().split('T')[0]
-}
-
-type RuleRow = {
+type AlertRow = {
   id: string
   name: string
   type: string
-  amount: number
+  amount: number | null
+  next_date: string | null
   frequency: string
   end_date: string | null
-  next_date: string
-  category_id: string | null
-  category: { name: string | null; color: string | null; icon: string | null } | null
 }
 
-function projectRulesForPeriod(
-  rules: RuleRow[],
+/**
+ * Cada bill_alert vira, no máximo, UMA linha de previsão — next_date é usado
+ * diretamente como a data prevista, sem recalcular a partir de day_of_month
+ * ou frequency (decisão deliberada: alertas mensais que só têm day_of_month
+ * preenchido, sem next_date, ficam de fora até serem editados na tela de
+ * Alertas). Alertas com next_date nulo não têm ocorrência futura conhecida
+ * e são excluídos por completo — não geram linha nenhuma.
+ */
+function alertsToPrevistas(
+  alerts: AlertRow[],
   periodStart: string,
   periodEnd: string,
-  excludeSet: Set<string>,
 ): TransacaoPrevista[] {
-  const results: TransacaoPrevista[] = []
-
-  for (const rule of rules) {
-    if (rule.type === 'transfer') continue
-
-    let date = rule.next_date
-
-    // Fast-forward to period window
-    let safety = 0
-    while (date < periodStart && safety < 5000) {
-      date = addPeriod(date, rule.frequency)
-      safety++
-    }
-
-    // Collect all occurrences within the window
-    safety = 0
-    while (date <= periodEnd && safety < 60) {
-      if (rule.end_date && date > rule.end_date) break
-
-      const key = `${rule.id}_${date}`
-      if (!excludeSet.has(key)) {
-        results.push({
-          id: `rec_${rule.id}_${date}`,
-          type: rule.type as 'income' | 'expense',
-          description: rule.name,
-          amount: rule.amount,
-          date,
-          category_id: rule.category_id,
-          category_name: rule.category?.name ?? 'Sem categoria',
-          category_color: rule.category?.color ?? '#94a3b8',
-          category_icon: rule.category?.icon ?? '📋',
-          source: 'recorrente',
-          recurring_rule_id: rule.id,
-        })
-      }
-
-      date = addPeriod(date, rule.frequency)
-      safety++
-    }
-  }
-
-  return results
+  return alerts
+    .filter((a) => a.next_date != null && a.next_date >= periodStart && a.next_date <= periodEnd)
+    .map((a) => ({
+      id: `alert_${a.id}`,
+      type: a.type as 'income' | 'expense',
+      description: a.name,
+      amount: a.amount ?? 0,
+      date: a.next_date as string,
+      category_id: null,
+      category_name: 'Sem categoria',
+      category_color: '#94a3b8',
+      category_icon: '📋',
+      source: 'alerta' as const,
+      bill_alert_id: a.id,
+    }))
 }
 
 // ─── Main Action ──────────────────────────────────────────────────────────────
@@ -148,16 +115,16 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
   const { start: periodStart, end: periodEnd } = periodBounds(month, year)
 
   // ── Parallel fetches ───────────────────────────────────────────────────────
-  let rulesQ = supabase
-    .from('recurring_rules')
-    .select('id, name, type, amount, frequency, end_date, next_date, category_id, category:categories(name, color, icon)')
+  let alertsQ = supabase
+    .from('bill_alerts')
+    .select('id, name, type, amount, next_date, frequency, end_date')
     .eq('user_id', user.id)
     .eq('is_active', true)
-  if (entityId) rulesQ = rulesQ.eq('entity_id', entityId)
+  if (entityId) alertsQ = alertsQ.eq('entity_id', entityId)
 
   let txQ = supabase
     .from('transactions')
-    .select('id, type, description, amount, date, category_id, recurring_rule_id, category:categories(name, color, icon)')
+    .select('id, type, description, amount, date, category_id, category:categories(name, color, icon)')
     .eq('user_id', user.id)
     .gte('date', periodStart)
     .lte('date', periodEnd)
@@ -170,14 +137,15 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
     .eq('user_id', user.id)
   if (entityId) budgetQ = budgetQ.eq('entity_id', entityId)
 
-  // Chart: all real transactions in the 6-month window
+  // Chart: todos os alertas ativos (filtramos por mês em memória, já que cada
+  // um só tem UM next_date) + transações reais na janela de 6 meses.
   const { start: chartStart } = periodBounds(todayMonth, todayYear)
   const sixthMonth = new Date(todayYear, todayMonth - 1 + 5, 1)
   const { end: chartEnd } = periodBounds(sixthMonth.getMonth() + 1, sixthMonth.getFullYear())
 
   let chartTxQ = supabase
     .from('transactions')
-    .select('type, amount, date, recurring_rule_id')
+    .select('type, amount, date')
     .eq('user_id', user.id)
     .gte('date', chartStart)
     .lte('date', chartEnd)
@@ -185,18 +153,17 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
   if (entityId) chartTxQ = chartTxQ.eq('entity_id', entityId)
 
   const [
-    { data: rules },
+    { data: rawAlerts },
     { data: rawTxs },
     { data: rawBudgets },
     { data: chartTxs },
-  ] = await Promise.all([rulesQ, txQ, budgetQ, chartTxQ])
+  ] = await Promise.all([alertsQ, txQ, budgetQ, chartTxQ])
 
-  const typedRules = (rules ?? []) as unknown as RuleRow[]
+  const typedAlerts = (rawAlerts ?? []) as unknown as AlertRow[]
 
   // ── Build transactions list ────────────────────────────────────────────────
   const todayStr = `${todayYear}-${pad(todayMonth)}-${pad(now.getDate())}`
 
-  const excludeSet = new Set<string>()
   const realizadasFromTx: TransacaoPrevista[] = []
   const previstasFromTx: TransacaoPrevista[] = []
 
@@ -214,21 +181,22 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
       category_color: cat?.color ?? '#94a3b8',
       category_icon: cat?.icon ?? '📋',
       source: isRealized ? 'realizada' : 'lancada',
-      recurring_rule_id: tx.recurring_rule_id ?? undefined,
     }
     if (isRealized) realizadasFromTx.push(item)
     else previstasFromTx.push(item)
-    if (tx.recurring_rule_id) excludeSet.add(`${tx.recurring_rule_id}_${tx.date}`)
   }
 
-  // For current month: project only future occurrences (> today)
-  const projectionStart = isCurrentMonth
-    ? (() => { const d = new Date(todayYear, todayMonth - 1, now.getDate() + 1); return d.toISOString().split('T')[0] })()
-    : periodStart
-  const projected = projectRulesForPeriod(typedRules, projectionStart, periodEnd, excludeSet)
+  // No mês corrente, só entram alertas cujo next_date ainda não chegou —
+  // mesmo corte que já existia para a projeção de recorrências (o dia de
+  // hoje pra frente é "previsão"; antes disso, se ainda não foi lançado
+  // manualmente, não faz mais sentido mostrar como próximo).
+  const alertsForPeriod = isCurrentMonth
+    ? typedAlerts.filter((a) => a.next_date == null || a.next_date > todayStr)
+    : typedAlerts
+  const projectedFromAlerts = alertsToPrevistas(alertsForPeriod, periodStart, periodEnd)
 
   const realizadas = realizadasFromTx.sort((a, b) => a.date.localeCompare(b.date))
-  const previstas = [...previstasFromTx, ...projected].sort((a, b) => a.date.localeCompare(b.date))
+  const previstas = [...previstasFromTx, ...projectedFromAlerts].sort((a, b) => a.date.localeCompare(b.date))
 
   // ── Budgets ────────────────────────────────────────────────────────────────
   const budgets: BudgetPrevisao[] = (rawBudgets ?? []).map((b) => {
@@ -242,14 +210,20 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
     }
   })
 
-  // ── Chart: 6-month projection ──────────────────────────────────────────────
+  // ── Chart: 6 meses — cada alerta é projetado por frequency dentro da janela ──
+  //
+  // Diferente da lista de "previstas" (que usa next_date como está, sem gerar
+  // múltiplas ocorrências — ver alertsToPrevistas), o gráfico agregado PRECISA
+  // saber quantas vezes um alerta recorrente cai em cada um dos 6 meses, senão
+  // uma despesa mensal (ex: aluguel) apareceria projetada só no mês do seu
+  // next_date e sumiria dos 5 meses seguintes. Isso não sobrescreve nada no
+  // banco — é só uma projeção em memória para somar o gráfico.
   const sixMonths: { month: number; year: number }[] = []
   for (let i = 0; i < 6; i++) {
     const d = new Date(todayYear, todayMonth - 1 + i, 1)
     sixMonths.push({ month: d.getMonth() + 1, year: d.getFullYear() })
   }
 
-  const chartExclude = new Set<string>()
   const chartByMonth = new Map<string, { income: number; expenses: number }>()
   for (const { month: m, year: y } of sixMonths) {
     chartByMonth.set(`${y}-${pad(m)}`, { income: 0, expenses: 0 })
@@ -261,17 +235,37 @@ export async function getPrevisaoData(month: number, year: number): Promise<Prev
     if (entry) {
       if (tx.type === 'income') entry.income += tx.amount
       else entry.expenses += tx.amount
-      if (tx.recurring_rule_id) chartExclude.add(`${tx.recurring_rule_id}_${tx.date}`)
     }
   }
 
-  for (const { month: m, year: y } of sixMonths) {
-    const { start: pStart, end: pEnd } = periodBounds(m, y)
-    const key = `${y}-${pad(m)}`
-    const entry = chartByMonth.get(key)!
-    for (const p of projectRulesForPeriod(typedRules, pStart, pEnd, chartExclude)) {
-      if (p.type === 'income') entry.income += p.amount
-      else entry.expenses += p.amount
+  // Alertas sem next_date continuam totalmente fora — nenhuma ocorrência é
+  // gerada pra eles, nem aqui nem na lista de previstas.
+  const MAX_OCCURRENCES_PER_ALERT = 200 // generoso o bastante pra 'daily' cobrir os ~180 dias da janela
+  for (const alert of typedAlerts) {
+    if (!alert.next_date) continue
+    const frequency = alert.frequency as RecurrenceFrequency
+
+    // Se next_date já está desatualizado (antes do início da janela — ex:
+    // regra migrada com auto_create=false que nunca avançou), pula direto
+    // pra primeira ocorrência dentro da janela em vez de iterar uma por uma
+    // desde uma data possivelmente muito antiga.
+    let occurrence = alert.next_date < chartStart
+      ? nextOccurrenceFrom(alert.next_date, frequency, chartStart)
+      : alert.next_date
+
+    let iterations = 0
+    while (occurrence <= chartEnd && iterations < MAX_OCCURRENCES_PER_ALERT) {
+      if (alert.end_date && occurrence > alert.end_date) break
+
+      const key = occurrence.substring(0, 7)
+      const entry = chartByMonth.get(key)
+      if (entry) {
+        if (alert.type === 'income') entry.income += alert.amount ?? 0
+        else entry.expenses += alert.amount ?? 0
+      }
+
+      occurrence = addPeriod(occurrence, frequency)
+      iterations++
     }
   }
 

@@ -719,10 +719,10 @@ function SourceBadge({ source }: { source: string }) {
       </span>
     )
   }
-  if (source === 'recorrente') {
+  if (source === 'alerta') {
     return (
       <span className="shrink-0 px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[10px] font-medium rounded-full">
-        Recorrente
+        Alerta
       </span>
     )
   }
