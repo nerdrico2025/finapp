@@ -221,12 +221,12 @@ export function CategorySelect({
                 type="button"
                 onClick={() => { onChange(''); setOpen(false) }}
                 className={cn(
-                  'w-full text-left px-3 py-2 text-sm text-gray-400 hover:bg-gray-50 flex items-center justify-between',
-                  !value && 'bg-gray-50 text-gray-500 font-medium'
+                  'w-full text-left px-3 py-2 text-sm text-gray-600 hover:bg-gray-50 flex items-center justify-between gap-2',
+                  !value && 'bg-gray-50 text-gray-700 font-medium'
                 )}
               >
-                <span>Sem categoria</span>
-                {!value && <Check className="w-3.5 h-3.5 text-emerald-500" />}
+                <span className="break-words">Sem categoria</span>
+                {!value && <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
               </button>
             )}
 
@@ -239,7 +239,7 @@ export function CategorySelect({
                   {isHeader ? (
                     <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 first:pt-1">
                       {parent.icon && <span className="text-sm">{parent.icon}</span>}
-                      <span className="text-[11px] font-medium text-gray-400 uppercase tracking-wide leading-none">
+                      <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide leading-none">
                         {parent.name}
                       </span>
                     </div>
@@ -248,13 +248,13 @@ export function CategorySelect({
                       type="button"
                       onClick={() => select(parent.id)}
                       className={cn(
-                        'w-full text-left px-3 py-2 text-sm hover:bg-gray-50 flex items-center justify-between',
+                        'w-full text-left px-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center justify-between gap-2',
                         value === parent.id && 'bg-emerald-50 text-emerald-700'
                       )}
                     >
-                      <span className="flex items-center gap-1.5">
-                        {parent.icon && <span>{parent.icon}</span>}
-                        <span className={cn(selectableParents && hasChildren && 'font-medium text-gray-600')}>
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        {parent.icon && <span className="shrink-0">{parent.icon}</span>}
+                        <span className={cn('break-words', selectableParents && hasChildren && 'font-medium text-gray-600')}>
                           {parent.name}
                         </span>
                       </span>
@@ -268,13 +268,13 @@ export function CategorySelect({
                       type="button"
                       onClick={() => select(child.id)}
                       className={cn(
-                        'w-full text-left pl-7 pr-3 py-2 text-sm hover:bg-gray-50 flex items-center justify-between',
+                        'w-full text-left pl-7 pr-3 py-2 text-sm text-gray-700 hover:bg-gray-50 flex items-center justify-between gap-2',
                         value === child.id && 'bg-emerald-50 text-emerald-700'
                       )}
                     >
-                      <span className="flex items-center gap-1.5">
-                        {child.icon && <span>{child.icon}</span>}
-                        <span>{child.name}</span>
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        {child.icon && <span className="shrink-0">{child.icon}</span>}
+                        <span className="break-words">{child.name}</span>
                       </span>
                       {value === child.id && <Check className="w-3.5 h-3.5 text-emerald-500 shrink-0" />}
                     </button>
@@ -284,7 +284,7 @@ export function CategorySelect({
             })}
 
             {filtered.length === 0 && !showEmpty && (
-              <p className="px-3 py-4 text-sm text-gray-400 text-center">Nenhuma categoria encontrada</p>
+              <p className="px-3 py-4 text-sm text-gray-500 text-center">Nenhuma categoria encontrada</p>
             )}
           </div>
 

@@ -7,12 +7,13 @@
   --foreground: #171717;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+/*
+ * This app is light-theme only — no component uses Tailwind's `dark:`
+ * variant. A `prefers-color-scheme: dark` override here would flip
+ * --foreground to a near-white color while every surface stays
+ * hardcoded bg-white, making any text that relies on the inherited
+ * body color unreadable for users with an OS/browser dark preference.
+ */
 
 body {
   color: var(--foreground);

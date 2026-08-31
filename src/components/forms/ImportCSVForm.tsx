@@ -8,6 +8,7 @@ import { importTransactions, findImportDuplicates, findKnownBankTransactionIds, 
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
+import { mergeSuggestionIntoRow, getCategoryBadge } from '@/lib/utils/import-suggestions'
 import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import { CategorySelect } from '@/components/ui/CategorySelect'
@@ -31,6 +32,10 @@ interface EditableRow {
   type: 'income' | 'expense'
   categoryId: string | null
   source: 'rule' | 'ai' | 'keyword' | 'manual' | 'auto' | null
+  /** Confiança da sugestão (só relevante para source === 'ai'). Usado para
+   *  marcar visualmente sugestões que a IA deu mas com baixa certeza — o
+   *  usuário ainda pode editar normalmente, é só um sinalizador de revisão. */
+  confidence?: 'high' | 'medium' | 'low' | null
   checked: boolean
   duplicate?: DuplicateMatch | null
   error?: string
@@ -97,6 +102,7 @@ function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
       type: r.type as 'income' | 'expense',
       categoryId: null,
       source: null,
+      confidence: null,
       checked: !r.error && !isBalanceRow,
       error: r.error,
       raw: r.raw ?? '',
@@ -527,11 +533,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           for (const item of results) {
             if (!item) continue
             const { idx, s } = item
-            if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
-              if (!next[idx].categoryId || next[idx].source !== 'manual') {
-                next[idx] = { ...next[idx], categoryId: s.category_id, source: s.source }
-              }
-            }
+            const merged = mergeSuggestionIntoRow(next[idx], s)
+            next[idx] = { ...next[idx], categoryId: merged.categoryId, source: merged.source, confidence: merged.confidence }
           }
           return next
         })
@@ -616,9 +619,13 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     }))
     const res = await importTransactions(valid)
 
-    // Learn rules for confirmed rows that have a category
+    // Learn rules for confirmed rows that have a category — mas não a partir
+    // de sugestões de baixa confiança que o usuário não revisou/confirmou:
+    // marcar a checkbox de importação não é o mesmo que validar a categoria,
+    // e aprender com um palpite fraco poderia propagar um erro para futuras
+    // transações parecidas.
     for (const r of toImport) {
-      if (r.categoryId && r.description) {
+      if (r.categoryId && r.description && r.confidence !== 'low') {
         learnRule(r.description, r.categoryId, null).catch(() => {})
       }
     }
@@ -976,7 +983,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           <CategorySelect
                             categories={allCategories.filter(c => c.type === row.type)}
                             value={row.categoryId ?? ''}
-                            onChange={val => updateRow(i, { categoryId: val || null, source: val ? 'manual' : null })}
+                            onChange={val => updateRow(i, { categoryId: val || null, source: val ? 'manual' : null, confidence: null })}
                             onCreateNew={() => setNewCat({ rowIdx: i, name: '', color: '#6b7280', saving: false })}
                             placeholder="— categoria —"
                             compact
@@ -986,27 +993,36 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Source badge */}
                       <td className="px-2 py-1.5">
-                        {row.source === 'auto' && (
+                        {getCategoryBadge(row) === 'auto' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-600 text-[10px] font-medium whitespace-nowrap">
                             ✓ Auto
                           </span>
                         )}
-                        {row.source === 'rule' && (
+                        {getCategoryBadge(row) === 'rule' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-blue-50 text-blue-600 text-[10px] font-medium whitespace-nowrap">
                             Regra
                           </span>
                         )}
-                        {row.source === 'ai' && (
+                        {getCategoryBadge(row) === 'ai_low' && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 text-[10px] font-medium whitespace-nowrap"
+                            title="A IA não tem certeza dessa categoria — confira antes de importar"
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5 shrink-0" />
+                            Sugerido — revisar
+                          </span>
+                        )}
+                        {getCategoryBadge(row) === 'ai' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-purple-50 text-purple-600 text-[10px] font-medium whitespace-nowrap">
                             IA
                           </span>
                         )}
-                        {row.source === 'keyword' && (
+                        {getCategoryBadge(row) === 'keyword' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 text-[10px] font-medium whitespace-nowrap">
                             Sugestão
                           </span>
                         )}
-                        {row.source === 'manual' && (
+                        {getCategoryBadge(row) === 'manual' && (
                           <span className="inline-block px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[10px] font-medium whitespace-nowrap">
                             Manual
                           </span>
@@ -1021,6 +1037,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                             amount: -row.amount,
                             categoryId: null,
                             source: null,
+                            confidence: null,
                           })}
                           disabled={!!row.error}
                           className={cn(
