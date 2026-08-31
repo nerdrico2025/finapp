@@ -50,6 +50,11 @@ interface MenuPos {
   maxHeight: number
 }
 
+// Largura mínima do menu aberto, independente da largura do trigger que o
+// abre — calibrada para acomodar os labels mais longos do conjunto padrão de
+// categorias (ex. "Restaurantes e lanchonetes") em até 2 linhas legíveis.
+const MIN_MENU_WIDTH = 240
+
 export function CategorySelect({
   categories,
   value,
@@ -110,12 +115,22 @@ export function CategorySelect({
     const spaceAbove = r.top
     const openUp = spaceBelow < 280 && spaceAbove > spaceBelow
     const maxHeight = Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12)
+    // O menu nunca fica mais estreito que o trigger, mas também nunca mais
+    // estreito que MIN_MENU_WIDTH — em contextos compactos (ex.: a coluna de
+    // categoria da tabela de importação) o trigger tem só ~100px, largura
+    // insuficiente pra labels como "Restaurante e lanchonete" ou o cabeçalho
+    // "ALIMENTAÇÃO" mesmo quebrando linha. O menu precisa da própria largura
+    // mínima, independente de quão estreito for o elemento que o abre.
+    const width = Math.max(r.width, MIN_MENU_WIDTH)
+    // Não deixa o menu (agora possivelmente mais largo que o trigger) vazar
+    // pra fora da viewport à direita.
+    const left = Math.min(r.left, Math.max(8, window.innerWidth - width - 8))
     setPos({
       ...(openUp
         ? { bottom: window.innerHeight - r.top + 4 }
         : { top: r.bottom + 4 }),
-      left: r.left,
-      width: r.width,
+      left,
+      width,
       maxHeight,
     })
   }, [])
@@ -237,9 +252,9 @@ export function CategorySelect({
               return (
                 <div key={parent.id}>
                   {isHeader ? (
-                    <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 first:pt-1">
-                      {parent.icon && <span className="text-sm">{parent.icon}</span>}
-                      <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide leading-none">
+                    <div className="flex items-center gap-1.5 px-3 pt-2 pb-1 first:pt-1 min-w-0">
+                      {parent.icon && <span className="text-sm shrink-0">{parent.icon}</span>}
+                      <span className="text-[11px] font-medium text-gray-500 uppercase tracking-wide leading-snug break-words">
                         {parent.name}
                       </span>
                     </div>

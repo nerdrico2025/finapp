@@ -64,3 +64,61 @@ export function keywordFallback(description: string, categories: CategoryOption[
   }
   return null
 }
+
+// ─── Correspondência direta com nome de categoria/subcategoria cadastrada ─────
+
+// Nomes de categoria mais curtos que isso não entram na comparação — evita
+// que uma categoria genérica de poucas letras "bata" por coincidência dentro
+// de uma descrição sem relação nenhuma com ela.
+export const MIN_CATEGORY_NAME_MATCH_LENGTH = 4
+
+/**
+ * Verifica se o texto da descrição contém, literalmente, o nome de uma das
+ * categorias (ou subcategorias) já cadastradas pelo usuário — ex.: a própria
+ * palavra "Alimentação" aparecendo na descrição de uma transação de mercado.
+ * Diferente de keywordFallback (que depende de uma lista fixa de nomes de
+ * estabelecimentos conhecidos), essa checagem usa os nomes reais cadastrados
+ * pelo usuário, então cobre qualquer categoria — inclusive personalizadas.
+ *
+ * Quando várias categorias batem, prioriza o nome mais longo/específico
+ * (ex.: "Restaurantes e lanchonetes" antes de um nome curto que também bata).
+ */
+export function matchCategoryNameInDescription(
+  description: string,
+  categories: CategoryOption[],
+): CategoryOption | null {
+  const normalizedDesc = normalizeDescription(description)
+  if (!normalizedDesc) return null
+
+  const candidates = categories
+    .map((c) => ({ category: c, normalizedName: normalizeDescription(c.name) }))
+    .filter(({ normalizedName }) => normalizedName.length >= MIN_CATEGORY_NAME_MATCH_LENGTH)
+    .filter(({ normalizedName }) => normalizedDesc.includes(normalizedName))
+    .sort((a, b) => b.normalizedName.length - a.normalizedName.length)
+
+  return candidates[0]?.category ?? null
+}
+
+// ─── Fingerprint para correspondência com histórico de transações ────────────
+
+// Fingerprints mais curtos que isso não são usados para buscar no histórico —
+// termos genéricos e curtos (ex.: só "pix" ou só "boleto" depois de remover
+// números) combinam por acaso com contrapartes completamente diferentes,
+// então teriam mais chance de reaproveitar a categoria errada do que acertar.
+export const MIN_FINGERPRINT_LENGTH = 8
+
+/**
+ * Extrai o "núcleo" semântico de uma descrição de transação, removendo
+ * números isolados (data, número de contrato/fatura/matrícula) que variam a
+ * cada cobrança do mesmo estabelecimento mas não mudam de quem é a
+ * transação — ex.: "Contas — Telefonica 05/2026" e "Contas — Telefonica
+ * 06/2026" viram o mesmo fingerprint "contas telefonica", permitindo
+ * reconhecer que é a mesma contraparte recorrente mesmo com o sufixo
+ * numérico mudando a cada mês/fatura.
+ */
+export function coreFingerprint(description: string): string {
+  return normalizeDescription(description)
+    .replace(/\b\d+\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}

@@ -2,7 +2,14 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
-import { normalizeDescription, keywordFallback, type CategoryOption } from '@/lib/utils/categorization'
+import {
+  normalizeDescription,
+  keywordFallback,
+  matchCategoryNameInDescription,
+  coreFingerprint,
+  MIN_FINGERPRINT_LENGTH,
+  type CategoryOption,
+} from '@/lib/utils/categorization'
 
 // Helper: acessa tabelas não incluídas nos tipos gerados ainda
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,7 +102,72 @@ async function incrementMatchCount(
     .eq('id', data.id)
 }
 
-// ─── PASSO 3 — IA via OpenRouter ────────────────────────────────────────────────
+// ─── PASSO 2 — Histórico de transações já categorizadas pelo usuário ──────────
+
+// category_rules (Passo 1) só bate quando a descrição normalizada é IDÊNTICA
+// a uma já vista antes — na prática isso quase nunca acontece em extratos
+// reais, porque a maioria das cobranças recorrentes (conta de telefone,
+// mensalidade, boleto) embute um número que muda a cada ocorrência (data,
+// nº da fatura/contrato). Esse passo busca no histórico de transações já
+// categorizadas do próprio usuário por um "fingerprint" que ignora esses
+// números isolados — ver coreFingerprint() — então reconhece que "Contas —
+// Telefonica 05/2026" é a mesma contraparte recorrente de "Contas —
+// Telefonica 04/2026", mesmo com o sufixo mudando.
+const HISTORY_LOOKBACK_MONTHS = 12
+const HISTORY_SCAN_LIMIT = 500
+
+// Só reaproveita categoria de transações passadas cuja fonte indica uma
+// decisão já validada por um humano (clique manual, ou uma regra que já
+// acumulou confirmações suficientes para auto-aplicar) — nunca de uma
+// transação que ela mesma só tinha uma sugestão de IA/palavra-chave não
+// revisada, para não propagar um palpite errado adiante.
+const TRUSTED_HISTORY_SOURCES = ['manual', 'rule', 'auto'] as const
+
+interface HistoryCandidate {
+  description: string | null
+  category_id: string | null
+  category: { name: string } | null
+}
+
+async function findHistoricalCategoryMatch(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  description: string,
+  entityId: string | null,
+  userId: string,
+): Promise<{ category_id: string; category_name: string } | null> {
+  const fingerprint = coreFingerprint(description)
+  if (fingerprint.length < MIN_FINGERPRINT_LENGTH) return null
+
+  const cutoff = new Date()
+  cutoff.setMonth(cutoff.getMonth() - HISTORY_LOOKBACK_MONTHS)
+  const cutoffStr = cutoff.toISOString().split('T')[0]
+
+  let query = supabase
+    .from('transactions')
+    .select('description, category_id, category:categories(name)')
+    .eq('user_id', userId)
+    .not('category_id', 'is', null)
+    .in('category_source', TRUSTED_HISTORY_SOURCES)
+    .neq('type', 'transfer')
+    .eq('is_mirror', false)
+    .gte('date', cutoffStr)
+    .order('date', { ascending: false })
+    .limit(HISTORY_SCAN_LIMIT)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
+  if (!data) return null
+
+  for (const row of data as unknown as HistoryCandidate[]) {
+    if (row.category_id && coreFingerprint(row.description ?? '') === fingerprint) {
+      return { category_id: row.category_id, category_name: row.category?.name ?? '' }
+    }
+  }
+  return null
+}
+
+// ─── PASSO 4 — IA via OpenRouter ────────────────────────────────────────────────
 
 // Modelo escolhido: google/gemini-flash-1.5-8b. Critérios (esta chamada roda em
 // onBlur do formulário de transação, então latência baixa é mandatório, e roda
@@ -248,7 +320,25 @@ async function callOpenRouter(
 
 /**
  * Sugere categoria para uma descrição de transação.
- * Prioridade: regra aprendida → IA → fallback null.
+ *
+ * Ordem de precedência (da mais confiável pra mais genérica — cada passo só
+ * roda se o anterior não achou nada):
+ *   1. Regra aprendida (category_rules) — mesma descrição normalizada já
+ *      vista e confirmada antes. confidence 'high', source 'rule'/'auto'.
+ *   2. Histórico de transações do usuário — mesma contraparte recorrente
+ *      (fingerprint ignorando números que variam por fatura/data) já
+ *      categorizada manualmente antes. confidence 'high', source 'rule' —
+ *      reaproveita o mesmo badge da regra aprendida porque semanticamente é
+ *      a mesma coisa: uma decisão que o próprio usuário já tomou.
+ *   3. Correspondência direta com nome de categoria/subcategoria cadastrada
+ *      — a descrição cita literalmente o nome de uma categoria do usuário
+ *      (ex.: "Alimentação" no texto). confidence 'high', source 'keyword'.
+ *   4. IA (OpenRouter), com fallback pra lista de palavras-chave embutida se
+ *      a IA não responder — sugestão genérica, sem precedente do usuário.
+ *      confidence conforme a IA retornar (inclusive 'low') ou 'medium' fixo
+ *      pro fallback de palavra-chave.
+ *   5. Sem sugestão nenhuma — confidence 'low', category_id null.
+ *
  * Nunca lança erro — categorização é sugestão, não bloqueio.
  */
 export async function suggestCategory(
@@ -294,7 +384,19 @@ export async function suggestCategory(
       }
     }
 
-    // ── PASSO 2: palavras-chave + IA (OpenRouter, precisam das categorias do usuário) ─
+    // ── PASSO 2: histórico de transações já categorizadas pelo usuário ──────
+    const historyMatch = await findHistoricalCategoryMatch(supabase, description, entityId, user.id)
+    if (historyMatch) {
+      return {
+        category_id: historyMatch.category_id,
+        category_name: historyMatch.category_name,
+        description_suggestion: description,
+        confidence: 'high',
+        source: 'rule',
+      }
+    }
+
+    // ── Categorias do usuário (usadas pelos passos 3 e 4) ────────────────────
     let catOptions = categories ?? []
     if (catOptions.length === 0) {
       // RLS já filtra pelo usuário autenticado — não precisa de filtro manual
@@ -305,13 +407,25 @@ export async function suggestCategory(
       catOptions = (data ?? []) as CategoryOption[]
     }
 
+    // ── PASSO 3: correspondência direta com nome de categoria cadastrada ────
+    const nameMatch = matchCategoryNameInDescription(description, catOptions)
+    if (nameMatch) {
+      return {
+        category_id: nameMatch.id,
+        category_name: nameMatch.name,
+        description_suggestion: description,
+        confidence: 'high',
+        source: 'keyword',
+      }
+    }
+
+    // ── PASSO 4: IA (OpenRouter), com fallback por palavras-chave embutidas ─
     const apiKey = process.env.OPENROUTER_API_KEY
     const aiEnabled = !!apiKey && apiKey !== 'sk-' && apiKey.length > 10
     const recentTx = aiEnabled ? await fetchRecentTransactions(supabase, user.id, entityId) : []
     const aiResult = await callOpenRouter(description, amount, catOptions, recentTx)
 
     if (!aiResult.category_id) {
-      // ── PASSO 3: fallback por palavras-chave embutidas ─────────────────────
       const kwCatId = keywordFallback(description, catOptions)
       if (kwCatId) {
         const kwCat = catOptions.find((c) => c.id === kwCatId)
