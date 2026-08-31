@@ -698,44 +698,53 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
       {/* File drop zone */}
       <div>
-        <label className="block text-sm font-medium text-gray-700 mb-2">Arquivo</label>
-        <div
-          onClick={() => step === 'idle' && fileRef.current?.click()}
-          className={cn(
-            'border-2 border-dashed rounded-xl p-6 text-center transition-colors',
-            step === 'idle' ? 'cursor-pointer hover:border-gray-300 hover:bg-gray-50' : '',
-            fileName ? 'border-emerald-300 bg-emerald-50' : 'border-gray-200',
-          )}
-        >
-          {step === 'parsing' ? (
-            <div className="flex flex-col items-center gap-2">
-              <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
-              <p className="text-sm text-gray-500">Processando arquivo{format === 'pdf' ? ' (isso pode levar alguns segundos)' : ''}…</p>
+        {/* Antes de escolher um arquivo (ou enquanto processa) — área grande e
+            tracejada, clicável, faz sentido em destaque. Depois de carregado
+            com sucesso, vira uma barra compacta (ver abaixo) pra sobrar mais
+            altura pra pré-visualização, que é a parte mais usada da tela. */}
+        {(step === 'idle' || step === 'parsing') && (
+          <>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Arquivo</label>
+            <div
+              onClick={() => step === 'idle' && fileRef.current?.click()}
+              className={cn(
+                'border-2 border-dashed rounded-xl p-6 text-center transition-colors',
+                step === 'idle' ? 'cursor-pointer hover:border-gray-300 hover:bg-gray-50 border-gray-200' : 'border-emerald-300 bg-emerald-50',
+              )}
+            >
+              {step === 'parsing' ? (
+                <div className="flex flex-col items-center gap-2">
+                  <Loader2 className="w-8 h-8 text-emerald-500 animate-spin" />
+                  <p className="text-sm text-gray-500">Processando arquivo{format === 'pdf' ? ' (isso pode levar alguns segundos)' : ''}…</p>
+                </div>
+              ) : (
+                <>
+                  <Upload className="w-8 h-8 mx-auto mb-2 text-gray-300" />
+                  <p className="text-sm text-gray-500">Clique para selecionar o arquivo</p>
+                  <p className="text-xs text-gray-400 mt-1">CSV, XLSX, OFX/QFX ou PDF</p>
+                </>
+              )}
             </div>
-          ) : fileName ? (
-            <div className="flex items-center gap-3">
-              <FormatIcon format={format} />
-              <div className="text-left flex-1 min-w-0">
-                <p className="text-sm font-medium text-emerald-700 truncate">{fileName}</p>
-                <p className="text-xs text-gray-400 mt-0.5">
-                  {format?.toUpperCase()}
-                  {step === 'preview' && ` · ${checkedRows.length} selecionadas${errorRows.length > 0 ? `, ${errorRows.length} com erro` : ''}`}
-                  {step === 'mapping' && ' · mapeamento necessário'}
-                </p>
-              </div>
-              <button onClick={e => { e.stopPropagation(); reset() }} className="p-1 text-gray-400 hover:text-gray-600 rounded shrink-0">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          ) : (
-            <>
-              <Upload className="w-8 h-8 mx-auto mb-2 text-gray-300" />
-              <p className="text-sm text-gray-500">Clique para selecionar o arquivo</p>
-              <p className="text-xs text-gray-400 mt-1">CSV, XLSX, OFX/QFX ou PDF</p>
-            </>
-          )}
-          <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls,.ofx,.qfx,.pdf" className="hidden" onChange={handleFile} />
-        </div>
+          </>
+        )}
+
+        {/* Arquivo já carregado — barra compacta de uma linha só. */}
+        {fileName && step !== 'parsing' && (
+          <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2">
+            <FormatIcon format={format} size="w-4 h-4" />
+            <p className="text-sm font-medium text-emerald-700 truncate">{fileName}</p>
+            <p className="text-xs text-gray-500 shrink-0 whitespace-nowrap">
+              {format?.toUpperCase()}
+              {step === 'preview' && ` · ${checkedRows.length} selecionadas${errorRows.length > 0 ? `, ${errorRows.length} com erro` : ''}`}
+              {step === 'mapping' && ' · mapeamento necessário'}
+            </p>
+            <button onClick={reset} className="p-1 text-gray-400 hover:text-gray-600 rounded shrink-0 ml-auto" title="Remover arquivo">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
+
+        <input ref={fileRef} type="file" accept=".csv,.txt,.xlsx,.xls,.ofx,.qfx,.pdf" className="hidden" onChange={handleFile} />
 
         {parseError && (
           <div className="mt-2 flex items-start gap-2 bg-red-50 border border-red-100 rounded-lg px-3 py-2.5">
@@ -1137,9 +1146,9 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
 // ─── Format icon ──────────────────────────────────────────────────────────────
 
-function FormatIcon({ format }: { format: FileFormat | null }) {
-  if (format === 'xlsx') return <FileSpreadsheet className="w-8 h-8 text-emerald-600 shrink-0" />
-  if (format === 'pdf') return <FileText className="w-8 h-8 text-red-500 shrink-0" />
-  if (format === 'ofx') return <File className="w-8 h-8 text-blue-500 shrink-0" />
-  return <File className="w-8 h-8 text-emerald-500 shrink-0" />
+function FormatIcon({ format, size = 'w-8 h-8' }: { format: FileFormat | null; size?: string }) {
+  if (format === 'xlsx') return <FileSpreadsheet className={cn(size, 'text-emerald-600 shrink-0')} />
+  if (format === 'pdf') return <FileText className={cn(size, 'text-red-500 shrink-0')} />
+  if (format === 'ofx') return <File className={cn(size, 'text-blue-500 shrink-0')} />
+  return <File className={cn(size, 'text-emerald-500 shrink-0')} />
 }
