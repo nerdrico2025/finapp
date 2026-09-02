@@ -1,10 +1,9 @@
 'use server'
 
 import { createClient } from '@/lib/supabase/server'
+import { DRE_GROUP_VALUES, type DREGroupKey } from '@/lib/constants/dre-groups'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-export type DREGroupKey = 'receita_bruta' | 'deducoes' | 'cmv' | 'despesa_operacional' | 'depreciacao'
 
 export interface DRECategoryItem {
   categoryId: string
@@ -99,7 +98,7 @@ function mergeGroups(
   curr: ReturnType<typeof aggregate>,
   prev: ReturnType<typeof aggregate>
 ): Record<DREGroupKey, DREGroup> {
-  const keys: DREGroupKey[] = ['receita_bruta', 'deducoes', 'cmv', 'despesa_operacional', 'depreciacao']
+  const keys = DRE_GROUP_VALUES
   const result = {} as Record<DREGroupKey, DREGroup>
 
   for (const key of keys) {

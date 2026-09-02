@@ -7,6 +7,7 @@ import { z } from 'zod'
 import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import type { Category } from '@/types'
+import { DRE_GROUPS, DRE_GROUP_VALUES, type DREGroupKey } from '@/lib/constants/dre-groups'
 
 const PRESET_COLORS = [
   '#10b981', '#3b82f6', '#8b5cf6', '#f59e0b',
@@ -16,23 +17,19 @@ const PRESET_COLORS = [
 
 const SUGGESTED_ICONS = ['🍽️', '🚗', '🏠', '💊', '🎮', '📚', '👕', '📦', '💼', '💻', '📈', '💰', '✈️', '🎵', '🐾', '🏋️', '🎁', '🔧', '💡', '🛒']
 
-const DRE_GROUPS = [
-  { value: 'receita_bruta',       label: 'Receita Bruta' },
-  { value: 'deducoes',            label: 'Deduções / Impostos' },
-  { value: 'cmv',                 label: 'CMV / Custos' },
-  { value: 'despesa_operacional', label: 'Despesas Operacionais' },
-  { value: 'depreciacao',         label: 'Depreciação / Amortização' },
-]
-
 const categorySchema = z.object({
   name: z.string().min(1, 'Informe o nome da categoria').max(40, 'Nome muito longo'),
   type: z.enum(['income', 'expense']),
   icon: z.string(),
   color: z.string().min(1, 'Selecione uma cor'),
-  dre_group: z.string().nullish(),
+  dre_group: z.enum(DRE_GROUP_VALUES, { error: 'Selecione um grupo válido do DRE' }).nullish(),
 })
 
 type CategoryFormRaw = z.infer<typeof categorySchema>
+
+function toDREGroupKey(value: string | null | undefined): DREGroupKey | null {
+  return (DRE_GROUP_VALUES as readonly string[]).includes(value ?? '') ? (value as DREGroupKey) : null
+}
 
 export type CategoryFormValues = CategoryFormRaw & { parent_id?: string | null }
 
@@ -71,7 +68,7 @@ export function CategoryForm({
       type: fixedType ?? defaultValues?.type ?? 'expense',
       icon: defaultValues?.icon ?? '',
       color: defaultValues?.color ?? PRESET_COLORS[0],
-      dre_group: defaultValues?.dre_group ?? null,
+      dre_group: toDREGroupKey(defaultValues?.dre_group),
     },
   })
 
@@ -188,7 +185,7 @@ export function CategoryForm({
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1.5">Grupo no DRE</label>
           <select
-            {...register('dre_group')}
+            {...register('dre_group', { setValueAs: (v) => (v === '' ? null : v) })}
             className="w-full px-3.5 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent bg-white"
           >
             <option value="">— Não mapear no DRE —</option>
@@ -196,6 +193,7 @@ export function CategoryForm({
               <option key={value} value={value}>{label}</option>
             ))}
           </select>
+          {errors.dre_group && <p className="mt-1.5 text-xs text-red-600">{errors.dre_group.message}</p>}
           <p className="mt-1 text-xs text-gray-400">
             Categorias sem grupo não aparecem no DRE, apenas no fluxo de caixa.
           </p>
