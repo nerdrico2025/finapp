@@ -3,7 +3,8 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
-import type { Category, CategoryType } from '@/types'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Category, CategoryType, Database } from '@/types'
 
 export interface CategoryFormData {
   name: string
@@ -13,6 +14,49 @@ export interface CategoryFormData {
   parent_id?: string | null
   is_default?: boolean
   dre_group?: string | null
+}
+
+/**
+ * O grupo do DRE só faz sentido para entidades PJ. A UI já esconde o campo para
+ * PF (CategoriesClient passa showDREGroup={isBusinessEntity}), mas o payload da
+ * Server Action é público — então descartamos o valor aqui também.
+ *
+ * `getEntityId` é resolvido de forma preguiçosa: quando não há valor a gravar,
+ * nenhuma consulta é disparada.
+ */
+async function resolveDREGroup(
+  supabase: SupabaseClient,
+  value: string | null | undefined,
+  getEntityId: () => Promise<string | null>
+): Promise<string | null> {
+  if (value == null) return null
+
+  const entityId = await getEntityId()
+  if (!entityId) return null
+
+  const { data: entity } = await supabase
+    .from('entities')
+    .select('type')
+    .eq('id', entityId)
+    .single()
+
+  return entity?.type === 'business' ? value : null
+}
+
+/** Entidade dona da categoria — não a entidade ativa da sessão. */
+async function getCategoryEntityId(
+  supabase: SupabaseClient,
+  categoryId: string,
+  userId: string
+): Promise<string | null> {
+  const { data } = await supabase
+    .from('categories')
+    .select('entity_id')
+    .eq('id', categoryId)
+    .eq('user_id', userId)
+    .maybeSingle()
+
+  return data?.entity_id ?? null
 }
 
 export async function getCategories(type?: CategoryType) {
@@ -56,6 +100,7 @@ export async function createCategory(formData: CategoryFormData) {
   if (!user) return { error: 'Não autenticado', data: null }
 
   const entityId = await getActiveEntityId(supabase, user.id)
+  const dreGroup = await resolveDREGroup(supabase, formData.dre_group, async () => entityId)
 
   const { data: created, error } = await supabase.from('categories').insert({
     user_id: user.id,
@@ -66,7 +111,7 @@ export async function createCategory(formData: CategoryFormData) {
     color: formData.color || null,
     parent_id: formData.parent_id ?? null,
     is_default: formData.is_default ?? false,
-    dre_group: formData.dre_group ?? null,
+    dre_group: dreGroup,
   }).select().single()
 
   if (error) return { error: error.message, data: null }
@@ -84,14 +129,23 @@ export async function updateCategory(id: string, formData: Partial<CategoryFormD
 
   if (!user) return { error: 'Não autenticado' }
 
+  const payload: Database['public']['Tables']['categories']['Update'] = {
+    name: formData.name,
+    icon: formData.icon ?? null,
+    color: formData.color ?? null,
+  }
+
+  // `undefined` = campo ausente do payload (ex.: form sem o select de DRE em
+  // contexto PF) — preserva o valor no banco. `null` = limpeza explícita.
+  if (formData.dre_group !== undefined) {
+    payload.dre_group = await resolveDREGroup(supabase, formData.dre_group, () =>
+      getCategoryEntityId(supabase, id, user.id)
+    )
+  }
+
   const { error } = await supabase
     .from('categories')
-    .update({
-      name: formData.name,
-      icon: formData.icon ?? null,
-      color: formData.color ?? null,
-      dre_group: formData.dre_group ?? null,
-    })
+    .update(payload)
     .eq('id', id)
     .eq('user_id', user.id)
 
