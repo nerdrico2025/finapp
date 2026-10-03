@@ -5,6 +5,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { getUserPlanLimits } from '@/lib/plan-server'
 import type { AccountType } from '@/types'
+import { computeTotalBalance } from '@/lib/accounts/balance'
 
 export interface AccountFormData {
   name: string
@@ -52,7 +53,7 @@ export async function getTotalBalance() {
 
   let query = supabase
     .from('accounts')
-    .select('balance, include_in_total')
+    .select('type, balance, include_in_total')
     .eq('user_id', user.id)
     .eq('is_active', true)
 
@@ -62,11 +63,7 @@ export async function getTotalBalance() {
 
   if (error || !data) return { total: 0, error: error?.message ?? null }
 
-  const total = data
-    .filter((a) => a.include_in_total)
-    .reduce((sum, a) => sum + (a.balance ?? 0), 0)
-
-  return { total, error: null }
+  return { total: computeTotalBalance(data), error: null }
 }
 
 export async function createAccount(formData: AccountFormData): Promise<{ error: string | null; feature?: string; message?: string }> {

@@ -186,6 +186,7 @@ export interface Database {
           transfer_amount: number | null
           transfer_pair_id: string | null
           is_mirror: boolean
+          transfer_status: TransferStatus | null
           tags: string[] | null
           attachments: string[] | null
           import_hash: string | null
@@ -211,6 +212,7 @@ export interface Database {
           transfer_amount?: number | null
           transfer_pair_id?: string | null
           is_mirror?: boolean
+          transfer_status?: TransferStatus | null
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null
@@ -233,6 +235,7 @@ export interface Database {
           transfer_amount?: number | null
           transfer_pair_id?: string | null
           is_mirror?: boolean
+          transfer_status?: TransferStatus | null
           tags?: string[] | null
           attachments?: string[] | null
           import_hash?: string | null
@@ -652,6 +655,7 @@ export type AccountType = Database['public']['Enums']['account_type']
 export type CategoryType = Database['public']['Enums']['category_type']
 export type TransactionType = Database['public']['Enums']['transaction_type']
 export type TransactionStatus = Database['public']['Enums']['transaction_status']
+export type TransferStatus = 'matched' | 'pending' | 'suggested'
 export type RecurrenceFrequency = Database['public']['Enums']['recurrence_frequency']
 export type AlertType = Database['public']['Enums']['alert_type']
 export type AlertStatus = Database['public']['Enums']['alert_status']

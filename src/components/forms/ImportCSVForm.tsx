@@ -2,10 +2,15 @@
 
 import { useState, useRef, useEffect } from 'react'
 import {
-  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus,
+  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus, ArrowLeftRight,
 } from 'lucide-react'
 import { importTransactions, findImportDuplicates, findKnownBankTransactionIds, type CSVRow, type DuplicateMatch } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
+import { analyzeImportTransfers } from '@/lib/actions/transfers'
+import {
+  fromDetection, chooseDestination, chooseCandidate, clearTransfer, importActionOf,
+  isTransferRow, isAbsorbed, TRANSFER_STATUS_LABEL, type RowTransferState,
+} from '@/lib/import/transfer-preview'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
 import { mergeSuggestionIntoRow, getCategoryBadge } from '@/lib/utils/import-suggestions'
@@ -42,6 +47,8 @@ interface EditableRow {
   raw: string
   /** FITID do OFX/QFX — camada 1 de deduplicação, ver findKnownBankTransactionIds. */
   bankTransactionId?: string | null
+  /** Transferência entre contas próprias (detectada ou escolhida na prévia). */
+  transfer?: RowTransferState | null
 }
 
 interface ImportResult {
@@ -49,6 +56,8 @@ interface ImportResult {
   duplicates: number
   errors: number
   errorDetails: string[]
+  transfers: number
+  absorbed: number
 }
 
 type FileFormat = 'csv' | 'xlsx' | 'ofx' | 'pdf'
@@ -109,6 +118,11 @@ function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
       bankTransactionId: r.bankTransactionId ?? null,
     }
   })
+}
+
+/** Linhas que o usuário pode marcar/desmarcar (já registradas via transferência não geram linha nova). */
+function isSelectable(r: EditableRow): boolean {
+  return !r.error && !isAbsorbed(r.transfer)
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────
@@ -337,6 +351,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [importing, setImporting] = useState(false)
   const [suggestingAi, setSuggestingAi] = useState(false)
   const [checkingDuplicates, setCheckingDuplicates] = useState(false)
+  const [checkingTransfers, setCheckingTransfers] = useState(false)
+  const [onlyTransfers, setOnlyTransfers] = useState(false)
   const [autoSkippedCount, setAutoSkippedCount] = useState(0)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
@@ -363,9 +379,25 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   }
 
   function toggleAll() {
-    const validRows = editableRows.filter(r => !r.error)
+    const validRows = editableRows.filter(isSelectable)
     const allChecked = validRows.every(r => r.checked)
-    setEditableRows(rows => rows.map(r => r.error ? r : { ...r, checked: !allChecked }))
+    setEditableRows(rows => rows.map(r => isSelectable(r) ? { ...r, checked: !allChecked } : r))
+  }
+
+  /** Edição manual de transferência — prevalece sobre a detecção. */
+  function updateTransfer(idx: number, next: RowTransferState) {
+    setEditableRows(rows => rows.map((r, i) => {
+      if (i !== idx) return r
+      const wasAbsorbed = isAbsorbed(r.transfer)
+      const nowAbsorbed = isAbsorbed(next)
+      return {
+        ...r,
+        transfer: next,
+        // Já registrada via transferência não gera linha nova; ao sair desse
+        // estado, a linha volta a ser importável.
+        checked: nowAbsorbed ? false : wasAbsorbed ? true : r.checked,
+      }
+    }))
   }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -408,7 +440,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
-          runDuplicateCheck(parsed)
+          runImportChecks(parsed)
         } else { setStep('mapping') }
       }
 
@@ -447,7 +479,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setEditableRows(parsed)
           setStep('preview')
           runAiSuggestions(parsed)
-          runDuplicateCheck(parsed)
+          runImportChecks(parsed)
         } else {
           console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
           setStep('mapping')
@@ -483,7 +515,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
-        runDuplicateCheck(parsed)
+        runImportChecks(parsed)
       }
 
       else if (fmt === 'pdf') {
@@ -498,7 +530,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         setEditableRows(parsed)
         setStep('preview')
         runAiSuggestions(parsed)
-          runDuplicateCheck(parsed)
+          runImportChecks(parsed)
       }
     } catch (err) {
       setParseError(`Erro ao processar o arquivo: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
@@ -511,7 +543,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setEditableRows(parsed)
     setStep('preview')
     runAiSuggestions(parsed)
-          runDuplicateCheck(parsed)
+          runImportChecks(parsed)
   }
 
   async function runAiSuggestions(rows: EditableRow[]) {
@@ -544,12 +576,53 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     }
   }
 
-  // Flag rows that look like duplicates (of saved transactions or earlier
-  // rows in this file) and uncheck them by default — the user opts back in.
-  async function runDuplicateCheck(rows: EditableRow[]) {
+  // Transferências primeiro, duplicatas depois: uma linha absorvida por uma
+  // transferência já registrada não deve aparecer como duplicata.
+  async function runImportChecks(rows: EditableRow[], accountId = selectedAccount) {
+    const withTransfers = await runTransferDetection(rows, accountId)
+    await runDuplicateCheck(withTransfers, accountId)
+  }
+
+  async function runTransferDetection(rows: EditableRow[], accountId: string): Promise<EditableRow[]> {
     const valid = rows
       .map((r, i) => ({ i, r }))
       .filter(({ r }) => !r.error && r.date)
+    if (valid.length === 0 || !accountId) return rows
+    setCheckingTransfers(true)
+    try {
+      const dets = await analyzeImportTransfers(
+        valid.map(({ r }) => ({
+          date: r.date,
+          description: r.description,
+          amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
+          bankTransactionId: r.bankTransactionId ?? null,
+        })),
+        accountId,
+      )
+      const detected = new Map<number, RowTransferState | null>()
+      valid.forEach(({ i }, k) => detected.set(i, fromDetection(dets[k])))
+
+      const apply = (list: EditableRow[]) => list.map((r, i) => {
+        if (!detected.has(i) || r.transfer?.manual) return r
+        const t = detected.get(i) ?? null
+        return { ...r, transfer: t, checked: isAbsorbed(t) ? false : r.checked }
+      })
+      setEditableRows(prev => apply(prev))
+      return apply(rows)
+    } catch {
+      // falha na detecção nunca bloqueia a importação
+      return rows
+    } finally {
+      setCheckingTransfers(false)
+    }
+  }
+
+  // Flag rows that look like duplicates (of saved transactions or earlier
+  // rows in this file) and uncheck them by default — the user opts back in.
+  async function runDuplicateCheck(rows: EditableRow[], accountId = selectedAccount) {
+    const valid = rows
+      .map((r, i) => ({ i, r }))
+      .filter(({ r }) => !r.error && r.date && !isAbsorbed(r.transfer))
     if (valid.length === 0) return
     setCheckingDuplicates(true)
     try {
@@ -560,7 +633,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
           categoryId: r.categoryId,
         })),
-        selectedAccount
+        accountId
       )
       setEditableRows(prev => {
         const next = [...prev]
@@ -607,16 +680,22 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   async function handleImport() {
     if (!selectedAccount) return
     setImporting(true)
-    const toImport = editableRows.filter(r => r.checked && !r.error && r.date)
-    const valid: CSVRow[] = toImport.map(r => ({
-      date: r.date,
-      description: r.description,
-      amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
-      account_id: selectedAccount,
-      category_id: r.categoryId ?? null,
-      category_source: r.categoryId ? r.source : null,
-      bank_transaction_id: r.bankTransactionId ?? null,
-    }))
+    // Linhas já registradas via transferência vão junto (desmarcadas) para
+    // que a perna existente receba o hash da linha e o par vire matched.
+    const toImport = editableRows.filter(r => !r.error && r.date && (r.checked || isAbsorbed(r.transfer)))
+    const valid: CSVRow[] = toImport.map(r => {
+      const transfer = importActionOf(r.transfer)
+      return {
+        date: r.date,
+        description: r.description,
+        amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
+        account_id: selectedAccount,
+        category_id: transfer ? null : (r.categoryId ?? null),
+        category_source: !transfer && r.categoryId ? r.source : null,
+        bank_transaction_id: r.bankTransactionId ?? null,
+        transfer,
+      }
+    })
     const res = await importTransactions(valid)
 
     // Learn rules for confirmed rows that have a category — mas não a partir
@@ -625,6 +704,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     // e aprender com um palpite fraco poderia propagar um erro para futuras
     // transações parecidas.
     for (const r of toImport) {
+      if (importActionOf(r.transfer)) continue
       if (r.categoryId && r.description && r.confidence !== 'low') {
         learnRule(r.description, r.categoryId, null).catch(() => {})
       }
@@ -633,7 +713,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setResult(res)
     setImporting(false)
     setStep('done')
-    if (res.inserted > 0) setTimeout(onSuccess, 1500)
+    if (res.inserted + res.transfers + res.absorbed > 0) setTimeout(onSuccess, 1500)
   }
 
   function reset() {
@@ -645,8 +725,13 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   const checkedRows = editableRows.filter(r => r.checked && !r.error && r.date)
   const errorRows = editableRows.filter(r => r.error)
-  const validCount = editableRows.filter(r => !r.error).length
+  const validCount = editableRows.filter(isSelectable).length
   const duplicateCount = editableRows.filter(r => r.duplicate && !r.error).length
+  const absorbedCount = editableRows.filter(r => !r.error && isAbsorbed(r.transfer)).length
+  const transferCount = editableRows.filter(r => !r.error && isTransferRow(r.transfer)).length
+  const ambiguousCount = editableRows.filter(r => !r.error && r.transfer?.status === 'ambiguous').length
+  const otherAccounts = accounts.filter(a => a.id !== selectedAccount)
+  const accountName = (id: string | null) => accounts.find(a => a.id === id)?.name ?? '—'
 
   // ── Result ──────────────────────────────────────────────────────────────────
   if (step === 'done' && result) {
@@ -666,16 +751,23 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             <p className="text-xs text-red-600 mt-0.5">Erros</p>
           </div>
         </div>
+        {(result.transfers > 0 || result.absorbed > 0) && (
+          <p className="text-xs text-sky-700 bg-sky-50 rounded-lg px-3 py-2">
+            {result.transfers > 0 && `${result.transfers} transferência${result.transfers > 1 ? 's' : ''} entre contas vinculada${result.transfers > 1 ? 's' : ''}`}
+            {result.transfers > 0 && result.absorbed > 0 && ' · '}
+            {result.absorbed > 0 && `${result.absorbed} já registrada${result.absorbed > 1 ? 's' : ''} via transferência (par confirmado)`}
+          </p>
+        )}
         {result.errorDetails.length > 0 && (
           <div className="bg-red-50 rounded-lg p-3 space-y-1 max-h-32 overflow-y-auto">
             {result.errorDetails.map((e, i) => <p key={i} className="text-xs text-red-700">{e}</p>)}
           </div>
         )}
         <button
-          onClick={result.inserted > 0 ? onSuccess : onCancel}
+          onClick={result.inserted + result.transfers + result.absorbed > 0 ? onSuccess : onCancel}
           className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg"
         >
-          {result.inserted > 0 ? 'Ver transações' : 'Fechar'}
+          {result.inserted + result.transfers + result.absorbed > 0 ? 'Ver transações' : 'Fechar'}
         </button>
       </div>
     )
@@ -689,7 +781,22 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         <label className="block text-sm font-medium text-gray-700 mb-1.5">Importar para a conta</label>
         <select
           value={selectedAccount}
-          onChange={e => setSelectedAccount(e.target.value)}
+          onChange={e => {
+            const accountId = e.target.value
+            setSelectedAccount(accountId)
+            if (step === 'preview') {
+              // Detecção e duplicatas dependem da conta: refaz do zero.
+              const reset = editableRows.map(r => ({
+                ...r,
+                transfer: null,
+                duplicate: null,
+                // Remarca o que tinha sido desmarcado automaticamente.
+                checked: r.error ? false : (r.duplicate || isAbsorbed(r.transfer)) ? true : r.checked,
+              }))
+              setEditableRows(reset)
+              runImportChecks(reset, accountId)
+            }
+          }}
           className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
         >
           {accounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
@@ -845,12 +952,25 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                 ({checkedRows.length} de {validCount} selecionadas{errorRows.length > 0 ? `, ${errorRows.length} com erro` : ''})
               </span>
             </p>
-            <button
-              onClick={toggleAll}
-              className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
-            >
-              {checkedRows.length === validCount ? 'Desmarcar todas' : 'Selecionar todas'}
-            </button>
+            <div className="flex items-center gap-3">
+              {transferCount > 0 && (
+                <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={onlyTransfers}
+                    onChange={e => setOnlyTransfers(e.target.checked)}
+                    className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+                  />
+                  Só transferências
+                </label>
+              )}
+              <button
+                onClick={toggleAll}
+                className="text-xs text-emerald-600 hover:text-emerald-700 font-medium"
+              >
+                {checkedRows.length === validCount ? 'Desmarcar todas' : 'Selecionar todas'}
+              </button>
+            </div>
           </div>
 
           {suggestingAi && (
@@ -872,6 +992,29 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                 </p>
                 <p className="text-xs text-gray-500 mt-0.5">
                   Já haviam sido importadas antes (mesmo identificador dado pelo banco) — nem entraram na lista abaixo.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {checkingTransfers && (
+            <div className="mb-3 flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-200 px-4 py-3">
+              <Loader2 className="w-5 h-5 animate-spin text-sky-500 shrink-0" />
+              <p className="text-sm font-semibold text-sky-800">Procurando transferências entre suas contas…</p>
+            </div>
+          )}
+
+          {!checkingTransfers && transferCount > 0 && (
+            <div className="mb-3 flex items-start gap-3 rounded-lg bg-sky-50 border border-sky-200 px-4 py-3">
+              <ArrowLeftRight className="w-5 h-5 text-sky-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-semibold text-sky-800">
+                  {transferCount} transferência{transferCount > 1 ? 's' : ''} entre contas
+                </p>
+                <p className="text-xs text-sky-700 mt-0.5">
+                  Não entram como receita nem despesa.
+                  {absorbedCount > 0 && ` ${absorbedCount} já registrada${absorbedCount > 1 ? 's' : ''} via transferência — só ${absorbedCount > 1 ? 'serão confirmadas' : 'será confirmada'}, sem linha nova.`}
+                  {ambiguousCount > 0 && ` ${ambiguousCount} com mais de um par possível — escolha o par na coluna "Conta destino", ou ${ambiguousCount > 1 ? 'entrarão' : 'entrará'} como receita/despesa.`}
                 </p>
               </div>
             </div>
@@ -908,6 +1051,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                   <col className="w-32" />
                   <col className="w-14" />
                   <col className="w-24" />
+                  <col className="w-36" />
                   <col className="w-24" />
                 </colgroup>
                 <thead className="bg-gray-50 sticky top-0 z-10">
@@ -930,11 +1074,12 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                     </th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Fonte</th>
                     <th className="text-left px-2 py-2 text-gray-500 font-medium">Tipo</th>
+                    <th className="text-left px-2 py-2 text-gray-500 font-medium">Conta destino</th>
                     <th className="text-right px-2 py-2 text-gray-500 font-medium">Valor</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-50">
-                  {editableRows.map((row, i) => (
+                  {editableRows.map((row, i) => (onlyTransfers && !isTransferRow(row.transfer)) ? null : (
                     <tr
                       key={i}
                       className={cn(
@@ -948,7 +1093,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                           type="checkbox"
                           checked={row.checked}
                           onChange={e => updateRow(i, { checked: e.target.checked })}
-                          disabled={!!row.error}
+                          disabled={!isSelectable(row)}
+                          title={isAbsorbed(row.transfer) ? 'Já registrada via transferência — o par será confirmado sem criar linha nova' : undefined}
                           className="rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
                         />
                       </td>
@@ -970,6 +1116,12 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                               title={row.description}
                               className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors truncate"
                             />
+                            {isAbsorbed(row.transfer) && (
+                              <span className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-sky-700">
+                                <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                                já registrada via transferência
+                              </span>
+                            )}
                             {row.duplicate && (
                               <span
                                 className="inline-flex items-center gap-1 mt-0.5 text-[10px] font-medium text-orange-600"
@@ -986,7 +1138,9 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Category */}
                       <td className="px-2 py-1.5">
-                        {suggestingAi && !row.categoryId && !row.error ? (
+                        {isTransferRow(row.transfer) && !row.error ? (
+                          <span className="text-gray-400 italic">Transferência</span>
+                        ) : suggestingAi && !row.categoryId && !row.error ? (
                           <div className="h-4 w-28 bg-amber-100 rounded animate-pulse" />
                         ) : row.error ? null : (
                           <CategorySelect
@@ -1040,6 +1194,15 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
                       {/* Type toggle */}
                       <td className="px-2 py-1.5">
+                        {isTransferRow(row.transfer) && !row.error ? (
+                          <button
+                            onClick={() => updateTransfer(i, clearTransfer(row.transfer))}
+                            title="Clique para tratar como receita/despesa"
+                            className="w-full px-1 py-0.5 rounded-full text-xs font-medium text-center bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
+                          >
+                            {row.amount < 0 ? 'Transf. ↗' : 'Transf. ↙'}
+                          </button>
+                        ) : (
                         <button
                           onClick={() => updateRow(i, {
                             type: row.type === 'income' ? 'expense' : 'income',
@@ -1058,6 +1221,48 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         >
                           {row.type === 'income' ? 'Receita' : 'Despesa'}
                         </button>
+                        )}
+                      </td>
+
+                      {/* Destination account / transfer status */}
+                      <td className="px-2 py-1.5">
+                        {!row.error && (
+                          <div className="space-y-0.5">
+                            <select
+                              value={isTransferRow(row.transfer) ? (row.transfer.destinationAccountId ?? '') : ''}
+                              onChange={e => updateTransfer(i, e.target.value
+                                ? chooseDestination(row.transfer, e.target.value)
+                                : clearTransfer(row.transfer))}
+                              className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-sky-400 focus:outline-none text-gray-700 py-0.5 truncate"
+                            >
+                              <option value="">—</option>
+                              {otherAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                            </select>
+                            {row.transfer?.status === 'ambiguous' && (
+                              <select
+                                value=""
+                                onChange={e => {
+                                  const c = row.transfer!.candidates.find(c => c.kind !== 'row' && c.id === e.target.value)
+                                  if (c) updateTransfer(i, chooseCandidate(row.transfer!, c))
+                                }}
+                                className="w-full rounded border border-orange-200 bg-orange-50 text-orange-800 text-[10px] py-0.5"
+                              >
+                                <option value="">Escolher par…</option>
+                                {row.transfer.candidates
+                                  .filter(c => !row.transfer!.destinationAccountId ||
+                                    (c.kind === 'leg' ? c.counterpartAccountId : c.accountId) === row.transfer!.destinationAccountId)
+                                  .map(c => c.kind === 'row' ? null : (
+                                    <option key={c.id} value={c.id}>
+                                      {accountName(c.kind === 'leg' ? c.counterpartAccountId : c.accountId)} · {formatDate(c.date)} · {c.description ?? 'sem descrição'}
+                                    </option>
+                                  ))}
+                              </select>
+                            )}
+                            {isTransferRow(row.transfer) && (
+                              <TransferBadge status={row.transfer.status} />
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Amount */}
@@ -1130,7 +1335,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         {step === 'preview' && (
           <button
             onClick={handleImport}
-            disabled={checkedRows.length === 0 || !selectedAccount || importing}
+            disabled={(checkedRows.length === 0 && absorbedCount === 0) || !selectedAccount || importing}
             className="flex-1 flex justify-center items-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white text-sm font-medium rounded-lg transition-colors"
           >
             {importing
@@ -1151,4 +1356,32 @@ function FormatIcon({ format, size = 'w-8 h-8' }: { format: FileFormat | null; s
   if (format === 'pdf') return <FileText className={cn(size, 'text-red-500 shrink-0')} />
   if (format === 'ofx') return <File className={cn(size, 'text-blue-500 shrink-0')} />
   return <File className={cn(size, 'text-emerald-500 shrink-0')} />
+}
+
+// ─── Transfer badge ───────────────────────────────────────────────────────────
+
+const TRANSFER_BADGE_CLASS: Record<keyof typeof TRANSFER_STATUS_LABEL, string> = {
+  matched: 'bg-emerald-50 text-emerald-700',
+  suggested: 'bg-sky-50 text-sky-700',
+  pending: 'bg-amber-50 text-amber-700',
+  ambiguous: 'bg-orange-50 text-orange-700',
+}
+
+const TRANSFER_BADGE_TITLE: Record<keyof typeof TRANSFER_STATUS_LABEL, string> = {
+  matched: 'Par confirmado com a outra conta',
+  suggested: 'Mesmo valor e data em outra conta — confira antes de importar',
+  pending: 'O par será criado; a outra conta confirma quando o extrato dela for importado',
+  ambiguous: 'Mais de um par possível — escolha qual',
+}
+
+function TransferBadge({ status }: { status: RowTransferState['status'] }) {
+  if (status === 'none') return null
+  return (
+    <span
+      title={TRANSFER_BADGE_TITLE[status]}
+      className={cn('inline-block px-1.5 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap', TRANSFER_BADGE_CLASS[status])}
+    >
+      {TRANSFER_STATUS_LABEL[status]}
+    </span>
+  )
 }
