@@ -7,6 +7,7 @@ import { getActiveEntityId } from '@/lib/entity'
 import { generateImportHash } from '@/lib/import/import-hash'
 import { applyImportTransfer, type ImportTransferAction } from '@/lib/import/transfer-writes'
 import { buildTransferMirror } from '@/lib/import/transfer-detection'
+import { isUniqueViolation } from '@/lib/utils/db-errors'
 import { getUserPlanLimits } from '@/lib/plan-server'
 import {
   scoreDuplicate,
@@ -300,26 +301,36 @@ export async function createTransaction(
     }
   }
 
-  const { error } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: user.id,
-      entity_id: entityId,
-      account_id: formData.account_id,
-      category_id: formData.category_id ?? null,
-      category_source: formData.category_id ? (formData.category_source ?? 'manual') : null,
-      type: formData.type,
-      amount: formData.amount,
-      description: formData.description ?? null,
-      notes: formData.notes ?? null,
-      date: formData.date,
-      status: formData.status ?? 'completed',
-      destination_account_id: formData.destination_account_id ?? null,
-      transfer_amount: formData.transfer_amount ?? null,
-      import_hash: importHash,
-    })
-    .select('id')
-    .single()
+  const row = {
+    user_id: user.id,
+    entity_id: entityId,
+    account_id: formData.account_id,
+    category_id: formData.category_id ?? null,
+    category_source: formData.category_id ? (formData.category_source ?? 'manual') : null,
+    type: formData.type,
+    amount: formData.amount,
+    description: formData.description ?? null,
+    notes: formData.notes ?? null,
+    date: formData.date,
+    status: formData.status ?? 'completed',
+    destination_account_id: formData.destination_account_id ?? null,
+    transfer_amount: formData.transfer_amount ?? null,
+    import_hash: importHash as string | null,
+  }
+  const insert = (values: typeof row) =>
+    supabase.from('transactions').insert(values).select('id').single()
+
+  let { error } = await insert(row)
+
+  // O usuário confirmou "salvar mesmo assim", mas já existe nesta conta uma
+  // transação com o mesmo hash (transactions_dedup_idx). O hash só serve à
+  // deduplicação da importação: grava esta sem ele, uma única vez.
+  if (error && formData.force && isUniqueViolation(error)) {
+    ;({ error } = await insert({ ...row, import_hash: null }))
+    if (error) {
+      return { error: 'Não foi possível salvar a transação: já existe um lançamento igual nesta conta.' }
+    }
+  }
 
   if (error) return { error: error.message }
 
@@ -780,6 +791,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
           errorDetails.push(`${row.date} ${row.description}: ${t.error}`)
           continue
         }
+        if (t.result === 'duplicate') { duplicates++; continue }
         if (t.result === 'absorbed') { absorbed++; continue }
         if (t.result === 'linked') { transfers++; continue }
         // 'skipped': a contraparte mudou desde a prévia — segue como income/expense.
@@ -815,6 +827,13 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         status: 'completed' as const,
         import_hash: importHash,
       })
+
+      // Índice único (conta + hash, ou FITID): outra importação gravou a mesma
+      // linha entre a checagem acima e este insert — é duplicata, não erro.
+      if (isUniqueViolation(error)) {
+        duplicates++
+        continue
+      }
 
       if (error) {
         errors++

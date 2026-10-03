@@ -9,6 +9,7 @@ import {
   type PlanRow,
   type TxPatch,
 } from './transfer-detection'
+import { isUniqueViolation } from '@/lib/utils/db-errors'
 
 type Snapshot = { id: string } & Record<string, unknown>
 
@@ -25,7 +26,7 @@ export async function executeTransferOps(
   userId: string,
   entityId: string | null,
   ops: PlannedOp[],
-): Promise<{ error: string | null; insertedIds: string[] }> {
+): Promise<{ error: string | null; uniqueViolation: boolean; insertedIds: string[] }> {
   const insertedIds: string[] = []
   const snapshots: Snapshot[] = []
 
@@ -50,7 +51,7 @@ export async function executeTransferOps(
   }
 
   for (const op of ops) {
-    let error: { message: string } | null = null
+    let error: { message: string; code?: string } | null = null
     if (op.op === 'insert') {
       const res = await supabase
         .from('transactions')
@@ -73,11 +74,11 @@ export async function executeTransferOps(
 
     if (error) {
       await rollback()
-      return { error: error.message, insertedIds: [] }
+      return { error: error.message, uniqueViolation: isUniqueViolation(error), insertedIds: [] }
     }
   }
 
-  return { error: null, insertedIds }
+  return { error: null, uniqueViolation: false, insertedIds }
 }
 
 // ─── Importação ───────────────────────────────────────────────────────────────
@@ -147,7 +148,7 @@ export async function applyImportTransfer(
   row: PlanRow,
   action: ImportTransferAction,
   newPairId: () => string,
-): Promise<{ result: 'linked' | 'absorbed' | 'skipped'; error: string | null }> {
+): Promise<{ result: 'linked' | 'absorbed' | 'duplicate' | 'skipped'; error: string | null }> {
   const isOutflow = row.amount < 0
   const sameEntity = (t: TxDetectionRow) => !entityId || t.entity_id === entityId
 
@@ -160,8 +161,7 @@ export async function applyImportTransfer(
       legRow.is_mirror === !isOutflow &&
       sameMovement(row.date, row.amount, legRow.date, Number(legRow.amount))
     if (!ok) return { result: 'skipped', error: null }
-    const { error } = await executeTransferOps(supabase, userId, entityId, planAbsorb(row, legRow!.id, legRow!.transfer_pair_id!))
-    return { result: error ? 'skipped' : 'absorbed', error }
+    return outcome(await executeTransferOps(supabase, userId, entityId, planAbsorb(row, legRow!.id, legRow!.transfer_pair_id!)), 'absorbed')
   }
 
   if (action.kind === 'convert') {
@@ -172,20 +172,32 @@ export async function applyImportTransfer(
       e.account_id !== row.accountId &&
       sameMovement(row.date, row.amount, e.date, Number(e.amount))
     if (!ok) return { result: 'skipped', error: null }
-    const { error } = await executeTransferOps(
+    return outcome(await executeTransferOps(
       supabase, userId, entityId,
       planConvert(row, { id: e!.id, accountId: e!.account_id, type: e!.type }, newPairId(), 'matched'),
-    )
-    return { result: error ? 'skipped' : 'linked', error }
+    ), 'linked')
   }
 
   if (action.counterpartAccountId === row.accountId ||
       !(await accountInEntity(supabase, userId, entityId, action.counterpartAccountId))) {
     return { result: 'skipped', error: null }
   }
-  const { error } = await executeTransferOps(
+  return outcome(await executeTransferOps(
     supabase, userId, entityId,
     planCreatePair(row, action.counterpartAccountId, newPairId(), 'pending'),
-  )
-  return { result: error ? 'skipped' : 'linked', error }
+  ), 'linked')
+}
+
+/**
+ * Violação de unicidade (conta + hash, ou FITID) significa que a linha já foi
+ * importada: conta como duplicata. O executor já desfez as escritas parciais
+ * do par antes de devolver o erro.
+ */
+function outcome(
+  res: { error: string | null; uniqueViolation: boolean },
+  success: 'linked' | 'absorbed',
+): { result: 'linked' | 'absorbed' | 'duplicate' | 'skipped'; error: string | null } {
+  if (res.uniqueViolation) return { result: 'duplicate', error: null }
+  if (res.error) return { result: 'skipped', error: res.error }
+  return { result: success, error: null }
 }
