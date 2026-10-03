@@ -9,6 +9,7 @@ import {
   planLinkExisting,
   planLinkToAccount,
   planUnlink,
+  planCompleteOrphan,
   findHistoricalPairs,
   type DetectionAccount,
   type DetectionExisting,
@@ -21,7 +22,7 @@ import {
 // Replica o necessário do banco: a tabela transactions e a regra de saldo de
 // recalculate_account_balance (migration 20260529003_transfer_pair.sql).
 
-type DbRow = TxDraft & { id: string }
+type DbRow = TxDraft & { id: string; transfer_amount?: number | null }
 
 const ITAU = 'acc-itau'
 const NUBANK = 'acc-nubank'
@@ -54,7 +55,7 @@ function balance(accountId: string, initial = 0): number {
     if (t.type === 'income' && t.account_id === accountId) return sum + t.amount
     if (t.type === 'expense' && t.account_id === accountId) return sum - t.amount
     if (t.type === 'transfer' && t.account_id === accountId) return sum - t.amount
-    if (t.type === 'transfer' && t.destination_account_id === accountId) return sum + t.amount
+    if (t.type === 'transfer' && t.destination_account_id === accountId) return sum + (t.transfer_amount ?? t.amount)
     return sum
   }, 0)
 }
@@ -447,5 +448,49 @@ describe('vínculo manual e retroativo', () => {
     expect(proposals).toEqual([{ outId: o1.id, inId: i1.id, status: 'matched' }])
     expect(ambiguous).toContain(o2.id)
     expect(ambiguous).toContain(i2.id)
+  })
+})
+
+// ─── Transferência órfã ───────────────────────────────────────────────────────
+
+describe('transferência órfã', () => {
+  function orphan(amount: number, transferAmount: number | null = null): DbRow {
+    const row: DbRow = {
+      id: `tx-${++seq}`, account_id: ITAU, type: 'transfer', amount, date: D, description: 'TED antiga',
+      destination_account_id: null, transfer_pair_id: null, is_mirror: false, transfer_status: null,
+      import_hash: null, bank_transaction_id: null, category_id: null, category_source: null,
+      transfer_amount: transferAmount,
+    }
+    db.push(row)
+    return row
+  }
+
+  it('definir a conta destino não muda o saldo da origem e cria o espelho matched', () => {
+    const o = orphan(250)
+    const before = balance(ITAU)
+    expect(before).toBe(-250)
+
+    apply(planCompleteOrphan(
+      { id: o.id, accountId: ITAU, amount: 250, transferAmount: null, date: D, description: 'TED antiga' },
+      NUBANK, 'p1',
+    ))
+
+    expect(balance(ITAU)).toBe(before)
+    expect(balance(NUBANK)).toBe(250)
+    expect(db.find(t => t.id === o.id)).toMatchObject({ destination_account_id: NUBANK, transfer_pair_id: 'p1', transfer_status: 'matched', is_mirror: false })
+    expect(db.find(t => t.is_mirror)).toMatchObject({
+      account_id: NUBANK, destination_account_id: ITAU, transfer_pair_id: 'p1', amount: 250, transfer_status: 'matched',
+    })
+  })
+
+  it('com transfer_amount, o espelho e o crédito no destino usam o valor recebido', () => {
+    const o = orphan(100, 98)
+    apply(planCompleteOrphan(
+      { id: o.id, accountId: ITAU, amount: 100, transferAmount: 98, date: D, description: null },
+      NUBANK, 'p1',
+    ))
+    expect(balance(ITAU)).toBe(-100)
+    expect(balance(NUBANK)).toBe(98)
+    expect(db.find(t => t.is_mirror)!.amount).toBe(98)
   })
 })

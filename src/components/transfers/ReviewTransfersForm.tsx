@@ -1,9 +1,13 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Loader2, ArrowRight } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { Loader2, ArrowRight, AlertTriangle } from 'lucide-react'
 import { toast } from 'sonner'
-import { scanHistoricalTransfers, approveHistoricalTransfers, type HistoricalPairView } from '@/lib/actions/transfers'
+import {
+  scanHistoricalTransfers, approveHistoricalTransfers, getOrphanTransfers, setTransferDestination,
+  type HistoricalPairView, type OrphanTransfer,
+} from '@/lib/actions/transfers'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import type { Account } from '@/types'
@@ -25,17 +29,27 @@ export function ReviewTransfersForm({
   const [proposals, setProposals] = useState<HistoricalPairView[]>([])
   const [ambiguousCount, setAmbiguousCount] = useState(0)
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [orphans, setOrphans] = useState<OrphanTransfer[]>([])
+  const [mirrorOrphanCount, setMirrorOrphanCount] = useState(0)
+  const router = useRouter()
 
   const accountName = (id: string) => accounts.find(a => a.id === id)?.name ?? '—'
 
   useEffect(() => {
-    scanHistoricalTransfers().then(res => {
+    Promise.all([scanHistoricalTransfers(), getOrphanTransfers()]).then(([res, orph]) => {
       setProposals(res.proposals)
       setAmbiguousCount(res.ambiguousCount)
       setSelected(new Set(res.proposals.map(key)))
+      setOrphans(orph.orphans)
+      setMirrorOrphanCount(orph.mirrorOrphanCount)
       setLoading(false)
     })
   }, [])
+
+  function handleOrphanResolved(id: string) {
+    setOrphans(prev => prev.filter(o => o.id !== id))
+    router.refresh()
+  }
 
   function toggle(k: string) {
     setSelected(prev => {
@@ -108,6 +122,38 @@ export function ReviewTransfersForm({
         </>
       )}
 
+      {!loading && orphans.length > 0 && (
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-orange-500" />
+            <h3 className="text-sm font-semibold text-gray-800">Transferências sem destino</h3>
+            <span className="text-xs text-gray-400">{orphans.length}</span>
+          </div>
+          <p className="text-xs text-gray-500">
+            Debitam a conta de origem, mas não creditam nenhuma conta. Defina a conta destino para completar o par.
+          </p>
+          <div className="max-h-72 overflow-y-auto divide-y divide-gray-100 border border-orange-100 rounded-xl">
+            {orphans.map(o => (
+              <OrphanRow
+                key={o.id}
+                orphan={o}
+                accounts={accounts}
+                originName={accountName(o.accountId)}
+                onResolved={() => handleOrphanResolved(o.id)}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!loading && mirrorOrphanCount > 0 && (
+        <p className="text-xs text-gray-500 bg-gray-50 rounded-lg px-3 py-2">
+          {mirrorOrphanCount} registro{mirrorOrphanCount === 1 ? '' : 's'} de entrada de transferência sem a saída
+          correspondente {mirrorOrphanCount === 1 ? 'não foi listado' : 'não foram listados'} aqui — completá-{mirrorOrphanCount === 1 ? 'lo' : 'los'} como
+          saída mudaria o saldo da conta.
+        </p>
+      )}
+
       {!loading && ambiguousCount > 0 && (
         <p className="text-xs text-orange-700 bg-orange-50 rounded-lg px-3 py-2">
           {ambiguousCount} transaç{ambiguousCount === 1 ? 'ão tem' : 'ões têm'} mais de um par possível e não
@@ -130,6 +176,59 @@ export function ReviewTransfersForm({
           </button>
         )}
       </div>
+    </div>
+  )
+}
+
+function OrphanRow({
+  orphan,
+  accounts,
+  originName,
+  onResolved,
+}: {
+  orphan: OrphanTransfer
+  accounts: Account[]
+  originName: string
+  onResolved: () => void
+}) {
+  const otherAccounts = accounts.filter(a => a.id !== orphan.accountId)
+  const [accountId, setAccountId] = useState(otherAccounts[0]?.id ?? '')
+  const [saving, setSaving] = useState(false)
+
+  async function handleSet() {
+    setSaving(true)
+    const res = await setTransferDestination(orphan.id, accountId)
+    setSaving(false)
+    if (res.error) { toast.error(res.error); return }
+    toast.success('Conta destino definida!')
+    onResolved()
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2.5">
+      <div className="flex-1 min-w-[12rem] text-sm">
+        <p className="font-medium text-gray-800 truncate">{orphan.description ?? 'Transferência'}</p>
+        <p className="text-xs text-gray-500">
+          {formatDate(orphan.date)} · {originName} ·{' '}
+          <span className="text-orange-700 font-medium">Transferência sem destino</span>
+        </p>
+      </div>
+      <span className="text-sm font-semibold tabular-nums text-gray-700">{formatCurrency(orphan.amount)}</span>
+      <select
+        value={accountId}
+        onChange={e => setAccountId(e.target.value)}
+        className="px-2 py-1.5 border border-gray-300 rounded-lg text-xs bg-white"
+      >
+        {otherAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+      </select>
+      <button
+        onClick={handleSet}
+        disabled={saving || !accountId}
+        className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 rounded-lg"
+      >
+        {saving && <Loader2 className="w-3 h-3 animate-spin" />}
+        Definir conta destino
+      </button>
     </div>
   )
 }

@@ -480,6 +480,61 @@ export function planLinkToAccount(
   ]
 }
 
+/** Lado de origem de uma transferência, como o createTransfer o recebe. */
+export interface TransferPrimary {
+  accountId: string
+  destinationAccountId: string
+  amount: number
+  /** Valor recebido no destino, quando difere do enviado. */
+  transferAmount: number | null
+  date: string
+  description: string | null
+}
+
+/**
+ * Espelho (is_mirror=true) da principal: só exibição na conta destino, sem
+ * efeito no saldo. Usado pelo createTransfer e ao completar uma órfã, para
+ * que os dois caminhos gerem o mesmo registro.
+ */
+export function buildTransferMirror(p: TransferPrimary, pairId: string) {
+  return {
+    account_id: p.destinationAccountId,
+    type: 'transfer' as const,
+    amount: p.transferAmount ?? p.amount,
+    date: p.date,
+    description: p.description,
+    destination_account_id: p.accountId,
+    transfer_pair_id: pairId,
+    is_mirror: true,
+    transfer_status: 'matched' as const,
+  }
+}
+
+/**
+ * Completa uma transferência órfã (type='transfer' sem destino nem par): ela
+ * já é a principal — a trigger sempre a debitou da origem —, então só ganha o
+ * destino e o par, e o espelho é criado. A origem continua com -amount; o
+ * destino passa a receber COALESCE(transfer_amount, amount).
+ */
+export function planCompleteOrphan(
+  orphan: { id: string; accountId: string; amount: number; transferAmount: number | null; date: string; description: string | null },
+  destinationAccountId: string,
+  pairId: string,
+): PlannedOp[] {
+  const mirror = buildTransferMirror({ ...orphan, destinationAccountId }, pairId)
+  return [
+    {
+      op: 'update',
+      id: orphan.id,
+      patch: { destination_account_id: destinationAccountId, transfer_pair_id: pairId, transfer_status: 'matched' },
+    },
+    {
+      op: 'insert',
+      row: { ...mirror, import_hash: null, bank_transaction_id: null, category_id: null, category_source: null },
+    },
+  ]
+}
+
 /** Desfaz o par: cada perna volta a income/expense, sem categoria. Saldo inalterado. */
 export function planUnlink(legs: { id: string; isMirror: boolean }[]): PlannedOp[] {
   return legs.map(l => ({

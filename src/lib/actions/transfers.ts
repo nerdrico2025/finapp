@@ -12,6 +12,7 @@ import {
   matchAccountByName,
   planLinkExisting,
   planLinkToAccount,
+  planCompleteOrphan,
   planUnlink,
   TRANSFER_DATE_TOLERANCE_DAYS,
   type DetectionAccount,
@@ -309,4 +310,110 @@ export async function approveHistoricalTransfers(
     else linked++
   }
   return { linked, failed, error: null }
+}
+
+// ─── Transferências órfãs ─────────────────────────────────────────────────────
+
+export interface OrphanTransfer {
+  id: string
+  accountId: string
+  date: string
+  amount: number
+  description: string | null
+}
+
+const ORPHAN_COLUMNS = 'id, account_id, date, amount, transfer_amount, description, entity_id, type, is_mirror, destination_account_id, transfer_pair_id'
+
+type OrphanRow = {
+  id: string
+  account_id: string
+  date: string
+  amount: number
+  transfer_amount: number | null
+  description: string | null
+  entity_id: string | null
+  type: string
+  is_mirror: boolean
+  destination_account_id: string | null
+  transfer_pair_id: string | null
+}
+
+/**
+ * Transferências sem destino e sem par (type='transfer', destination_account_id
+ * e transfer_pair_id nulos). As com is_mirror=true ficam de fora: não debitam a
+ * origem, então completá-las como principal mudaria o saldo — só são contadas.
+ */
+export async function getOrphanTransfers(): Promise<{
+  orphans: OrphanTransfer[]
+  mirrorOrphanCount: number
+  error: string | null
+}> {
+  const ctx = await getContext()
+  if (!ctx) return { orphans: [], mirrorOrphanCount: 0, error: 'Não autenticado' }
+  const { supabase, userId, entityId } = ctx
+
+  let q = supabase
+    .from('transactions')
+    .select('id, account_id, date, amount, description, is_mirror')
+    .eq('user_id', userId)
+    .eq('type', 'transfer')
+    .is('destination_account_id', null)
+    .is('transfer_pair_id', null)
+    .order('date', { ascending: false })
+  if (entityId) q = q.eq('entity_id', entityId)
+  const { data, error } = await q
+  if (error) return { orphans: [], mirrorOrphanCount: 0, error: error.message }
+
+  const rows = (data ?? []) as { id: string; account_id: string; date: string; amount: number; description: string | null; is_mirror: boolean }[]
+  return {
+    orphans: rows
+      .filter(r => !r.is_mirror)
+      .map(r => ({ id: r.id, accountId: r.account_id, date: r.date, amount: Number(r.amount), description: r.description })),
+    mirrorOrphanCount: rows.filter(r => r.is_mirror).length,
+    error: null,
+  }
+}
+
+/**
+ * "Definir conta destino" de uma órfã: preenche destination_account_id, gera
+ * o transfer_pair_id e cria o espelho pelo mesmo construtor do createTransfer,
+ * com transfer_status='matched'. O saldo da origem não muda.
+ */
+export async function setTransferDestination(
+  transactionId: string,
+  destinationAccountId: string,
+): Promise<{ error: string | null }> {
+  const ctx = await getContext()
+  if (!ctx) return { error: 'Não autenticado' }
+  const { supabase, userId, entityId } = ctx
+
+  const { data } = await supabase.from('transactions').select(ORPHAN_COLUMNS).eq('id', transactionId).eq('user_id', userId).maybeSingle()
+  const tx = data as OrphanRow | null
+  if (!tx || (entityId && tx.entity_id !== entityId) ||
+      tx.type !== 'transfer' || tx.is_mirror || tx.destination_account_id || tx.transfer_pair_id) {
+    return { error: 'Esta transação não é uma transferência sem destino' }
+  }
+  if (destinationAccountId === tx.account_id) return { error: 'Escolha uma conta diferente da origem' }
+
+  const accounts = await loadAccounts(supabase, userId, entityId)
+  if (!accounts.some(a => a.id === destinationAccountId)) return { error: 'Conta inválida' }
+
+  const { error } = await executeTransferOps(
+    supabase, userId, entityId,
+    planCompleteOrphan(
+      {
+        id: tx.id,
+        accountId: tx.account_id,
+        amount: Number(tx.amount),
+        transferAmount: tx.transfer_amount === null ? null : Number(tx.transfer_amount),
+        date: tx.date,
+        description: tx.description,
+      },
+      destinationAccountId,
+      randomUUID(),
+    ),
+  )
+  if (error) return { error }
+  revalidateMoney()
+  return { error: null }
 }

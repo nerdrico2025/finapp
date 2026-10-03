@@ -4,7 +4,7 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import {
   Plus, Upload, ChevronLeft, ChevronRight, ChevronDown, Trash2, Pencil,
-  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X, Link2, Unlink, ListChecks,
+  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X, Link2, Unlink, ListChecks, AlertTriangle, MapPin,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -13,6 +13,7 @@ import { TransactionForm } from '@/components/forms/TransactionForm'
 import { ImportCSVForm } from '@/components/forms/ImportCSVForm'
 import { LinkTransferForm } from '@/components/transfers/LinkTransferForm'
 import { ReviewTransfersForm } from '@/components/transfers/ReviewTransfersForm'
+import { SetTransferDestinationForm } from '@/components/transfers/SetTransferDestinationForm'
 import { unlinkTransfer } from '@/lib/actions/transfers'
 import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { cn } from '@/lib/utils/cn'
@@ -53,7 +54,7 @@ interface Props {
   totalExpenses: number
 }
 
-type Modal = 'closed' | 'create' | 'import' | 'edit' | 'link' | 'review'
+type Modal = 'closed' | 'create' | 'import' | 'edit' | 'link' | 'review' | 'destination'
 
 export function TransactionsClient({
   transactions,
@@ -130,6 +131,11 @@ export function TransactionsClient({
   function openLink(tx: TransactionWithRelations) {
     setLinkingTx(tx)
     setModal('link')
+  }
+
+  function openSetDestination(tx: TransactionWithRelations) {
+    setLinkingTx(tx)
+    setModal('destination')
   }
 
   function closeLink() {
@@ -350,6 +356,7 @@ export function TransactionsClient({
                   onEdit={() => openEdit(tx)}
                   onLink={() => openLink(tx)}
                   onUnlink={() => handleUnlink(tx)}
+                  onSetDestination={() => openSetDestination(tx)}
                 />
               ))}
             </ul>
@@ -418,6 +425,18 @@ export function TransactionsClient({
         </Modal>
       )}
 
+      {/* Orphan transfer: set destination */}
+      {modal === 'destination' && linkingTx && (
+        <Modal title="Definir conta destino" onClose={closeLink} wide>
+          <SetTransferDestinationForm
+            tx={linkingTx}
+            accounts={accounts}
+            onSuccess={() => { toast.success('Conta destino definida!'); closeLink(); router.refresh() }}
+            onCancel={closeLink}
+          />
+        </Modal>
+      )}
+
       {/* Historical transfer review */}
       {modal === 'review' && (
         <Modal title="Revisar transferências antigas" onClose={() => setModal('closed')} extraWide>
@@ -455,6 +474,7 @@ function TransactionRow({
   onEdit,
   onLink,
   onUnlink,
+  onSetDestination,
 }: {
   tx: TransactionWithRelations
   deleting: boolean
@@ -462,12 +482,15 @@ function TransactionRow({
   onEdit: () => void
   onLink: () => void
   onUnlink: () => void
+  onSetDestination: () => void
 }) {
   const isIncome = tx.type === 'income'
   const isTransfer = tx.type === 'transfer'
   // Mirror = incoming transfer (credit side); Primary = outgoing (debit side)
   const isTransferIn = isTransfer && tx.is_mirror
   const otherAccount = isTransfer ? tx.destination_account : null
+  // Órfã: transferência sem destino e sem par (só debita a origem).
+  const isOrphan = isTransfer && !tx.destination_account_id && !tx.transfer_pair_id && !tx.is_mirror
 
   return (
     <li className="flex items-center gap-3 px-5 py-3.5 group hover:bg-gray-50 transition-colors">
@@ -493,7 +516,12 @@ function TransactionRow({
           {tx.description ?? (isTransfer ? 'Transferência' : tx.type === 'income' ? 'Receita' : 'Despesa')}
         </p>
         <div className="flex items-center gap-2 mt-0.5">
-          {isTransfer ? (
+          {isOrphan ? (
+            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full font-medium bg-orange-50 text-orange-700">
+              <AlertTriangle className="w-3 h-3" />
+              Transferência sem destino
+            </span>
+          ) : isTransfer ? (
             <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-blue-50 text-blue-600">
               {isTransferIn
                 ? `← ${otherAccount?.name ?? tx.account?.name ?? 'Transferência'}`
@@ -538,7 +566,15 @@ function TransactionRow({
 
       {/* Actions */}
       <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all">
-        {isTransfer && tx.transfer_pair_id ? (
+        {isOrphan ? (
+          <button
+            onClick={onSetDestination}
+            title="Definir conta destino"
+            className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+          >
+            <MapPin className="w-3.5 h-3.5" />
+          </button>
+        ) : isTransfer && tx.transfer_pair_id ? (
           <button
             onClick={onUnlink}
             title="Desfazer vínculo"

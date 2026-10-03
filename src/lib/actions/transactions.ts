@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { generateImportHash } from '@/lib/import/import-hash'
 import { applyImportTransfer, type ImportTransferAction } from '@/lib/import/transfer-writes'
+import { buildTransferMirror } from '@/lib/import/transfer-detection'
 import { getUserPlanLimits } from '@/lib/plan-server'
 import {
   scoreDuplicate,
@@ -345,7 +346,6 @@ export async function createTransfer(
 
   const entityId = await getActiveEntityId(supabase, user.id)
   const pairId = randomUUID()
-  const receivedAmount = formData.transfer_amount ?? formData.amount
 
   // Primary record — drives balance changes in trigger (is_mirror=false)
   const { error: e1 } = await supabase.from('transactions').insert({
@@ -370,15 +370,14 @@ export async function createTransfer(
   const { error: e2 } = await supabase.from('transactions').insert({
     user_id: user.id,
     entity_id: entityId,
-    account_id: formData.destination_account_id,
-    type: 'transfer',
-    amount: receivedAmount,
-    date: formData.date,
-    description: formData.description ?? null,
-    destination_account_id: formData.account_id,
-    transfer_pair_id: pairId,
-    is_mirror: true,
-    transfer_status: 'matched',
+    ...buildTransferMirror({
+      accountId: formData.account_id,
+      destinationAccountId: formData.destination_account_id,
+      amount: formData.amount,
+      transferAmount: formData.transfer_amount ?? null,
+      date: formData.date,
+      description: formData.description ?? null,
+    }, pairId),
     status: 'completed',
   })
 
