@@ -170,7 +170,8 @@ export async function applyImportTransfer(
       e.type === (isOutflow ? 'income' : 'expense') &&
       !e.transfer_pair_id && !e.is_mirror &&
       e.account_id !== row.accountId &&
-      sameMovement(row.date, row.amount, e.date, Number(e.amount))
+      sameMovement(row.date, row.amount, e.date, Number(e.amount)) &&
+      await accountInEntity(supabase, userId, entityId, e.account_id) // conta da contraparte ativa
     if (!ok) return { result: 'skipped', error: null }
     return outcome(await executeTransferOps(
       supabase, userId, entityId,

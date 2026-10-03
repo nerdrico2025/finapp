@@ -12,15 +12,19 @@ import {
   Building2,
   CircleDollarSign,
   ChevronDown,
+  Archive,
+  RotateCcw,
+  Loader2,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency } from '@/lib/utils/format'
-import { createAccount, updateAccount, deleteAccount } from '@/lib/actions/accounts'
+import { createAccount, updateAccount, deleteAccount, getAccountUsage, setAccountActive } from '@/lib/actions/accounts'
 import { AccountForm, type AccountFormValues } from '@/components/forms/AccountForm'
 import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import { cn } from '@/lib/utils/cn'
 import { groupAccountsBySection } from '@/lib/accounts/balance'
+import { hasMovement, type AccountUsage } from '@/lib/accounts/usage'
 import type { Account, AccountType } from '@/types'
 import { useRouter } from 'next/navigation'
 
@@ -47,6 +51,7 @@ function AccountIcon({ type, className }: { type: AccountType; className?: strin
 
 interface Props {
   accounts: Account[]
+  inactiveAccounts: Account[]
   totalBalance: number
 }
 
@@ -56,12 +61,16 @@ type ModalState =
   | { type: 'edit'; account: Account }
   | { type: 'delete'; account: Account }
 
-export function AccountsClient({ accounts, totalBalance: total }: Props) {
+export function AccountsClient({ accounts, inactiveAccounts, totalBalance: total }: Props) {
   const [modal, setModal] = useState<ModalState>({ type: 'closed' })
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [upgradePrompt, setUpgradePrompt] = useState<{ feature: string; message: string } | null>(null)
-  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set(['inactive']))
+  // Movimentação da conta do modal de exclusão: undefined = carregando.
+  const [usage, setUsage] = useState<AccountUsage | null | undefined>(undefined)
+  const [deactivating, setDeactivating] = useState(false)
+  const [reactivatingId, setReactivatingId] = useState<string | null>(null)
   const router = useRouter()
   const sections = groupAccountsBySection(accounts)
 
@@ -93,6 +102,38 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
     const result = await updateAccount(modal.account.id, data)
     if (!result.error) { toast.success('Conta atualizada!'); refreshPage() }
     return result
+  }
+
+  async function openDelete(account: Account) {
+    setDeleteError(null)
+    setUsage(undefined)
+    setModal({ type: 'delete', account })
+    const res = await getAccountUsage(account.id)
+    if (res.error) setDeleteError(res.error)
+    setUsage(res.usage)
+  }
+
+  async function handleDeactivate() {
+    if (modal.type !== 'delete') return
+    setDeactivating(true)
+    const result = await setAccountActive(modal.account.id, false)
+    setDeactivating(false)
+    if (result.error) { setDeleteError(result.error); return }
+    toast.success('Conta inativada')
+    refreshPage()
+  }
+
+  async function handleReactivate(account: Account) {
+    setReactivatingId(account.id)
+    const result = await setAccountActive(account.id, true)
+    setReactivatingId(null)
+    if (result.error === 'LIMIT_REACHED') {
+      setUpgradePrompt({ feature: result.feature!, message: result.message! })
+      return
+    }
+    if (result.error) { toast.error(result.error); return }
+    toast.success('Conta reativada')
+    router.refresh()
   }
 
   async function handleDelete() {
@@ -133,7 +174,7 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
         </div>
 
         {/* Grid */}
-        {accounts.length === 0 ? (
+        {accounts.length === 0 && inactiveAccounts.length === 0 ? (
           <div className="text-center py-16 text-gray-400">
             <Wallet className="w-12 h-12 mx-auto mb-3 opacity-30" />
             <p className="text-sm">Nenhuma conta cadastrada ainda.</p>
@@ -180,10 +221,7 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
                           key={account.id}
                           account={account}
                           onEdit={() => setModal({ type: 'edit', account })}
-                          onDelete={() => {
-                            setDeleteError(null)
-                            setModal({ type: 'delete', account })
-                          }}
+                          onDelete={() => openDelete(account)}
                         />
                       ))}
                     </div>
@@ -192,6 +230,51 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
               )
             })}
           </div>
+        )}
+
+        {/* Inactive accounts */}
+        {inactiveAccounts.length > 0 && (
+          <section>
+            <button
+              type="button"
+              onClick={() => toggleSection('inactive')}
+              aria-expanded={!collapsed.has('inactive')}
+              className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 text-left"
+            >
+              <ChevronDown className={cn('w-4 h-4 text-gray-400 transition-transform', collapsed.has('inactive') && '-rotate-90')} />
+              <h2 className="text-sm font-semibold text-gray-500">Contas inativas</h2>
+              <span className="text-xs text-gray-400">
+                {inactiveAccounts.length} {inactiveAccounts.length === 1 ? 'conta' : 'contas'}
+              </span>
+              <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 font-medium">
+                Fora do saldo total
+              </span>
+            </button>
+            {!collapsed.has('inactive') && (
+              <ul className="divide-y divide-gray-100 rounded-2xl border border-gray-100 bg-white">
+                {inactiveAccounts.map((account) => (
+                  <li key={account.id} className="flex items-center gap-3 px-4 py-3">
+                    <AccountIcon type={account.type} className="w-4 h-4 text-gray-400" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium text-gray-600 truncate">{account.name}</p>
+                      <p className="text-xs text-gray-400">{ACCOUNT_TYPE_LABELS[account.type]}</p>
+                    </div>
+                    <span className="text-sm tabular-nums text-gray-500">{formatCurrency(account.balance)}</span>
+                    <button
+                      onClick={() => handleReactivate(account)}
+                      disabled={reactivatingId === account.id}
+                      className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-emerald-700 border border-emerald-200 rounded-lg hover:bg-emerald-50 disabled:opacity-50"
+                    >
+                      {reactivatingId === account.id
+                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        : <RotateCcw className="w-3.5 h-3.5" />}
+                      Reativar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         )}
       </div>
 
@@ -229,15 +312,41 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
         </Modal>
       )}
 
-      {/* Delete Confirm Modal */}
+      {/* Delete / deactivate modal */}
       {modal.type === 'delete' && (
-        <Modal title="Excluir conta" onClose={() => setModal({ type: 'closed' })}>
+        <Modal
+          title={usage && hasMovement(usage) ? 'Conta com movimentação' : 'Excluir conta'}
+          onClose={() => setModal({ type: 'closed' })}
+        >
           <div className="space-y-4">
-            <p className="text-sm text-gray-600">
-              Tem certeza que deseja excluir a conta{' '}
-              <span className="font-semibold text-gray-900">{modal.account.name}</span>?
-              Esta ação não pode ser desfeita.
-            </p>
+            {usage === undefined ? (
+              <div className="flex justify-center py-4"><Loader2 className="w-5 h-5 animate-spin text-gray-400" /></div>
+            ) : usage && hasMovement(usage) ? (
+              <div className="space-y-2 text-sm text-gray-600">
+                <p>
+                  <span className="font-semibold text-gray-900">{modal.account.name}</span> tem{' '}
+                  <span className="font-semibold text-gray-900">
+                    {usage.transactions} {usage.transactions === 1 ? 'transação' : 'transações'}
+                  </span>
+                  {usage.incomingTransfers > 0 && (
+                    <> e <span className="font-semibold text-gray-900">
+                      {usage.incomingTransfers} {usage.incomingTransfers === 1 ? 'transferência recebida' : 'transferências recebidas'}
+                    </span></>
+                  )}
+                  , por isso não pode ser excluída.
+                </p>
+                <p>
+                  Ao inativar, ela sai das listas, dos seletores de conta e do saldo total. O histórico continua em
+                  Transações e nos relatórios, e você pode reativá-la quando quiser.
+                </p>
+              </div>
+            ) : usage ? (
+              <p className="text-sm text-gray-600">
+                Tem certeza que deseja excluir a conta{' '}
+                <span className="font-semibold text-gray-900">{modal.account.name}</span>?
+                Ela não tem nenhuma movimentação. Esta ação não pode ser desfeita.
+              </p>
+            ) : null}
             {deleteError && (
               <div className="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
                 <p className="text-sm text-red-700">{deleteError}</p>
@@ -250,13 +359,24 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
               >
                 Cancelar
               </button>
-              <button
-                onClick={handleDelete}
-                disabled={deleting}
-                className="flex-1 py-2.5 px-4 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium rounded-lg transition-colors"
-              >
-                {deleting ? 'Excluindo...' : 'Excluir'}
-              </button>
+              {usage && hasMovement(usage) ? (
+                <button
+                  onClick={handleDeactivate}
+                  disabled={deactivating}
+                  className="flex-1 flex justify-center items-center gap-2 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  {deactivating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
+                  Inativar conta
+                </button>
+              ) : usage ? (
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="flex-1 py-2.5 px-4 bg-red-600 hover:bg-red-700 disabled:bg-red-400 text-white text-sm font-medium rounded-lg transition-colors"
+                >
+                  {deleting ? 'Excluindo...' : 'Excluir'}
+                </button>
+              ) : null}
             </div>
           </div>
         </Modal>
