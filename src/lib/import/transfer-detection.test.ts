@@ -533,3 +533,35 @@ describe('desfazer vínculo pendente', () => {
     expect(balance(NUBANK)).toBe(0)
   })
 })
+
+// ─── Contas inativas ──────────────────────────────────────────────────────────
+// O servidor passa só as contas ativas (loadAccounts filtra is_active=true).
+
+describe('contas inativas fora do motor', () => {
+  const ativas = accounts.filter(a => a.id !== BTG) // BTG inativa
+
+  it('transação de conta inativa não é candidata do Sinal A', () => {
+    plain(BTG, -1000, D, 'TED enviada')
+    const [d] = detectTransfers(
+      [{ accountId: NUBANK, amount: 1000, date: D, description: 'TED recebida' }],
+      ativas, existing(),
+    )
+    expect(d.status).toBe('none')
+  })
+
+  it('nome de conta inativa não vale como Sinal B', () => {
+    const [d] = detectTransfers(
+      [{ accountId: ITAU, amount: -500, date: D, description: 'TED para BTG' }],
+      ativas, existing(),
+    )
+    expect(d.status).toBe('none')
+  })
+
+  it('revisão retroativa não propõe par com conta inativa', () => {
+    plain(BTG, -80, D, 'PIX')
+    plain(NUBANK, 80, D, 'PIX recebido')
+    expect(findHistoricalPairs(existing(), ativas)).toEqual({ proposals: [], ambiguous: [] })
+    // Com a conta ativa, o mesmo par é proposto.
+    expect(findHistoricalPairs(existing(), accounts).proposals).toHaveLength(1)
+  })
+})

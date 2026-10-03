@@ -162,7 +162,9 @@ export async function getTransferLinkCandidates(transactionId: string): Promise<
     .lte('date', addDays(tx.date, MANUAL_LINK_WINDOW_DAYS)))
 
   const dist = (d: string) => Math.abs(new Date(d).getTime() - new Date(tx.date).getTime())
+  const activeIds = new Set(accounts.map(a => a.id))
   const candidates = rows
+    .filter(r => activeIds.has(r.account_id)) // contas inativas não são candidatas
     .map(r => ({
       id: r.id,
       accountId: r.account_id,
@@ -207,6 +209,8 @@ export async function linkAsTransfer(
     const other = rows.find(r => r.id === target.counterpartId)
     if (!free(other)) return { error: 'Contraparte não pode ser vinculada' }
     if (other!.type === tx!.type) return { error: 'As duas transações precisam ter sentidos opostos' }
+    const accounts = await loadAccounts(supabase, userId, entityId)
+    if (!accounts.some(a => a.id === other!.account_id)) return { error: 'A conta da contraparte está inativa ou não existe' }
     if (other!.account_id === tx!.account_id) return { error: 'As duas transações precisam ser de contas diferentes' }
     if (Number(other!.amount) !== Number(tx!.amount)) return { error: 'As duas transações precisam ter o mesmo valor' }
     ops = planLinkExisting(

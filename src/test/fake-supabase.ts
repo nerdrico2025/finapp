@@ -25,23 +25,29 @@ export function createFakeSupabase(opts: {
     let mode: 'select' | 'update' | 'delete' = 'select'
     let patch: Row = {}
     let limit = Infinity
+    let countOnly = false
 
     const rows = () => (tables[table] ??= []).filter(r => filters.every(f => f(r)))
-    const run = (): { data: Row[] | null; error: PgError | null } => {
+    const run = (): { data: Row[] | null; error: PgError | null; count?: number } => {
       if (mode === 'update') {
-        rows().forEach(r => Object.assign(r, patch))
-        return { data: null, error: null }
+        const updated = rows()
+        updated.forEach(r => Object.assign(r, patch))
+        return { data: updated, error: null }
       }
       if (mode === 'delete') {
         const del = new Set(rows())
         tables[table] = tables[table].filter(r => !del.has(r))
         return { data: null, error: null }
       }
+      if (countOnly) return { data: null, error: null, count: rows().length }
       return { data: rows().slice(0, limit), error: null }
     }
 
     const builder = {
-      select: () => builder,
+      select: (_cols?: string, o?: { count?: string; head?: boolean }) => {
+        if (o?.head) countOnly = true
+        return builder
+      },
       eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return builder },
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return builder },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return builder },

@@ -21,6 +21,16 @@ describe('computeTotalBalance', () => {
   })
 })
 
+describe('computeTotalBalance — contas inativas', () => {
+  it('ignora is_active=false por conta própria, mesmo que a consulta traga a conta', () => {
+    expect(computeTotalBalance([
+      { type: 'checking', balance: 1000, include_in_total: true, is_active: true },
+      { type: 'checking', balance: 700, include_in_total: true, is_active: false },
+      { type: 'wallet', balance: 30, include_in_total: true }, // sem o campo: ativa
+    ])).toBe(1030)
+  })
+})
+
 describe('groupAccountsBySection', () => {
   it('ordena as seções, omite as vazias e marca as que ficam fora do total', () => {
     const sections = groupAccountsBySection([

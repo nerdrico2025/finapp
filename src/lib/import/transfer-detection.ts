@@ -595,7 +595,8 @@ export interface HistoricalProposal {
 }
 
 /**
- * Varre income/expense fora de par e propõe pares pelo Sinal A, promovidos a
+ * Varre income/expense fora de par, nas contas de `accounts` (as ativas), e
+ * propõe pares pelo Sinal A, promovidos a
  * 'matched' quando o Sinal B confirma (uma das descrições cita a conta da
  * outra perna). Transações com mais de um candidato ficam de fora — vão para
  * `ambiguous` e só são vinculadas manualmente.
@@ -604,7 +605,10 @@ export function findHistoricalPairs(
   txs: DetectionExisting[],
   accounts: DetectionAccount[],
 ): { proposals: HistoricalProposal[]; ambiguous: string[] } {
-  const free = txs.filter(t => (t.type === 'income' || t.type === 'expense') && !t.transferPairId && !t.isMirror)
+  // Só contas da lista (as ativas da entidade): inativas nunca entram em pares.
+  const accountIds = new Set(accounts.map(a => a.id))
+  const free = txs.filter(t =>
+    (t.type === 'income' || t.type === 'expense') && !t.transferPairId && !t.isMirror && accountIds.has(t.accountId))
   const outs = free.filter(t => t.type === 'expense')
   const ins = free.filter(t => t.type === 'income')
 

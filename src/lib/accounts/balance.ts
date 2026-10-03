@@ -3,15 +3,16 @@ import type { AccountType } from '@/types'
 /**
  * Regra única do "Saldo total", usada na tela de Contas e no Dashboard (via
  * getTotalBalance): soma contas correntes, poupanças, cartões de crédito e
- * dinheiro/carteiras com include_in_total ligado. Investimentos e "outras"
- * nunca entram. Cartão com fatura em aberto tem saldo negativo e reduz o total.
+ * dinheiro/carteiras ativas e com include_in_total ligado. Investimentos,
+ * "outras" e contas inativas nunca entram. Cartão com fatura em aberto tem
+ * saldo negativo e reduz o total.
  */
 export const TOTAL_BALANCE_TYPES: readonly AccountType[] = ['checking', 'savings', 'credit_card', 'wallet']
 
-type BalanceAccount = { type: AccountType; balance: number | null; include_in_total: boolean }
+type BalanceAccount = { type: AccountType; balance: number | null; include_in_total: boolean; is_active?: boolean }
 
-export function countsInTotalBalance(a: Pick<BalanceAccount, 'type' | 'include_in_total'>): boolean {
-  return a.include_in_total && TOTAL_BALANCE_TYPES.includes(a.type)
+export function countsInTotalBalance(a: Pick<BalanceAccount, 'type' | 'include_in_total' | 'is_active'>): boolean {
+  return a.is_active !== false && a.include_in_total && TOTAL_BALANCE_TYPES.includes(a.type)
 }
 
 export function computeTotalBalance(accounts: BalanceAccount[]): number {

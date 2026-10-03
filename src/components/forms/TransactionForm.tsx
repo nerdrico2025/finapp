@@ -15,6 +15,7 @@ import { CategorySelect } from '@/components/ui/CategorySelect'
 import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import type { Account, Category, CategorySource } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
+import { accountOptions } from '@/lib/accounts/usage'
 
 const transactionSchema = z.object({
   type: z.enum(['income', 'expense', 'transfer']),
@@ -67,6 +68,11 @@ export function TransactionForm({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const today = new Date().toISOString().split('T')[0]
+
+  // Na edição, a conta (e o destino) atuais entram nos selects mesmo inativos —
+  // senão o select perde o valor e a transação seria salva em outra conta.
+  const accountOpts = accountOptions(accounts, [initialValues?.account])
+  const destinationOpts = accountOptions(accounts, [initialValues?.destination_account])
 
   const {
     register,
@@ -312,9 +318,9 @@ export function TransactionForm({
             className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
           >
             <option value="">Selecione uma conta</option>
-            {accounts.map((acc) => (
+            {accountOpts.map((acc) => (
               <option key={acc.id} value={acc.id}>
-                {acc.name}
+                {acc.name}{acc.inactive ? ' (inativa)' : ''}
               </option>
             ))}
           </select>
@@ -331,9 +337,9 @@ export function TransactionForm({
                 className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent"
               >
                 <option value="">Selecione</option>
-                {accounts.map((acc) => (
+                {destinationOpts.map((acc) => (
                   <option key={acc.id} value={acc.id}>
-                    {acc.name}
+                    {acc.name}{acc.inactive ? ' (inativa)' : ''}
                   </option>
                 ))}
               </select>
