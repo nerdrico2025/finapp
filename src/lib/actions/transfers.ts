@@ -14,6 +14,7 @@ import {
   planLinkToAccount,
   planCompleteOrphan,
   planUnlink,
+  planUnlinkPending,
   TRANSFER_DATE_TOLERANCE_DAYS,
   type DetectionAccount,
   type TransferDetection,
@@ -232,7 +233,11 @@ export async function linkAsTransfer(
   return { error: null }
 }
 
-/** "Desfazer vínculo": as duas pernas voltam a income/expense sem categoria. */
+/**
+ * "Desfazer vínculo". Par matched: as duas pernas voltam a income/expense sem
+ * categoria. Par pending: só a perna que veio de extrato continua (como
+ * income/expense); a perna sem extrato é apagada.
+ */
 export async function unlinkTransfer(transactionId: string): Promise<{ error: string | null }> {
   const ctx = await getContext()
   if (!ctx) return { error: 'Não autenticado' }
@@ -241,13 +246,23 @@ export async function unlinkTransfer(transactionId: string): Promise<{ error: st
   const { data: tx } = await supabase.from('transactions').select('transfer_pair_id').eq('id', transactionId).eq('user_id', userId).maybeSingle()
   if (!tx?.transfer_pair_id) return { error: 'Transação não está vinculada' }
 
-  const { data: legs } = await supabase.from('transactions').select('id, is_mirror').eq('transfer_pair_id', tx.transfer_pair_id).eq('user_id', userId)
-  if (!legs || legs.length === 0) return { error: 'Par não encontrado' }
+  const { data } = await supabase
+    .from('transactions')
+    .select('id, is_mirror, transfer_status, import_hash, bank_transaction_id, created_at')
+    .eq('transfer_pair_id', tx.transfer_pair_id)
+    .eq('user_id', userId)
+  type LegRow = { id: string; is_mirror: boolean; transfer_status: string | null; import_hash: string | null; bank_transaction_id: string | null; created_at: string }
+  const legs = (data ?? []) as LegRow[]
+  if (legs.length === 0) return { error: 'Par não encontrado' }
 
-  const { error } = await executeTransferOps(
-    supabase, userId, entityId,
-    planUnlink(legs.map((l: { id: string; is_mirror: boolean }) => ({ id: l.id, isMirror: l.is_mirror }))),
-  )
+  const isPending = legs.some(l => l.transfer_status === 'pending')
+  const ops = isPending
+    ? planUnlinkPending(legs.map(l => ({
+        id: l.id, isMirror: l.is_mirror, importHash: l.import_hash, bankTransactionId: l.bank_transaction_id, createdAt: l.created_at,
+      })))
+    : planUnlink(legs.map(l => ({ id: l.id, isMirror: l.is_mirror })))
+
+  const { error } = await executeTransferOps(supabase, userId, entityId, ops)
   if (error) return { error }
   revalidateMoney()
   return { error: null }

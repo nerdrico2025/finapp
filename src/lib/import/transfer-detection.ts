@@ -351,6 +351,7 @@ export type PlannedOp =
   | { op: 'update'; id: string; patch: TxPatch }
   | { op: 'updatePair'; pairId: string; patch: TxPatch }
   | { op: 'insert'; row: TxDraft }
+  | { op: 'delete'; id: string }
 
 /** Linha importada já normalizada para o planejamento. */
 export interface PlanRow {
@@ -535,21 +536,54 @@ export function planCompleteOrphan(
   ]
 }
 
+function unlinkPatch(isMirror: boolean): TxPatch {
+  return {
+    type: isMirror ? 'income' : 'expense',
+    destination_account_id: null,
+    transfer_pair_id: null,
+    is_mirror: false,
+    transfer_status: null,
+    category_id: null,
+    category_source: null,
+  }
+}
+
 /** Desfaz o par: cada perna volta a income/expense, sem categoria. Saldo inalterado. */
 export function planUnlink(legs: { id: string; isMirror: boolean }[]): PlannedOp[] {
-  return legs.map(l => ({
-    op: 'update' as const,
-    id: l.id,
-    patch: {
-      type: l.isMirror ? 'income' as const : 'expense' as const,
-      destination_account_id: null,
-      transfer_pair_id: null,
-      is_mirror: false,
-      transfer_status: null,
-      category_id: null,
-      category_source: null,
-    },
-  }))
+  return legs.map(l => ({ op: 'update' as const, id: l.id, patch: unlinkPatch(l.isMirror) }))
+}
+
+export interface UnlinkLeg {
+  id: string
+  isMirror: boolean
+  importHash: string | null
+  bankTransactionId: string | null
+  createdAt: string
+}
+
+/**
+ * Desfaz um par ainda pendente: só a perna que veio de extrato continua, como
+ * income/expense sem categoria; a perna sem extrato — criada pelo sistema para
+ * a outra conta — é apagada, então o saldo daquela conta volta ao que era antes
+ * do par. Perna "de extrato" = tem import_hash ou FITID. Se nenhuma tiver (par
+ * criado pelo vínculo manual a partir de uma transação digitada), fica a mais
+ * antiga: a perna sintética sempre é criada depois da original. Sem como
+ * distinguir, desfaz como um par confirmado (planUnlink).
+ */
+export function planUnlinkPending(legs: UnlinkLeg[]): PlannedOp[] {
+  if (legs.length !== 2) return planUnlink(legs)
+  const fromStatement = legs.filter(l => !!l.importHash || !!l.bankTransactionId)
+  let keep: UnlinkLeg | undefined
+  if (fromStatement.length === 1) keep = fromStatement[0]
+  else if (fromStatement.length === 0 && legs[0].createdAt !== legs[1].createdAt) {
+    keep = legs[0].createdAt < legs[1].createdAt ? legs[0] : legs[1]
+  }
+  if (!keep) return planUnlink(legs)
+  const drop = legs.find(l => l.id !== keep!.id)!
+  return [
+    { op: 'update', id: keep.id, patch: unlinkPatch(keep.isMirror) },
+    { op: 'delete', id: drop.id },
+  ]
 }
 
 // ─── Revisão retroativa ───────────────────────────────────────────────────────

@@ -144,7 +144,10 @@ export function TransactionsClient({
   }
 
   async function handleUnlink(tx: TransactionWithRelations) {
-    if (!confirm('Desfazer o vínculo desta transferência? As duas transações voltam a ser receita e despesa, sem categoria.')) return
+    const msg = tx.transfer_status === 'pending'
+      ? 'Desfazer o vínculo desta transferência pendente? O lançamento que veio do extrato volta a ser receita ou despesa, sem categoria, e o lançamento criado automaticamente na outra conta (ainda sem extrato) será apagado.'
+      : 'Desfazer o vínculo desta transferência? As duas transações voltam a ser receita e despesa, sem categoria.'
+    if (!confirm(msg)) return
     const res = await unlinkTransfer(tx.id)
     if (res.error) { toast.error(res.error); return }
     toast.success('Vínculo desfeito')

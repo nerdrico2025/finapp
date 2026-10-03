@@ -9,6 +9,7 @@ import {
   planLinkExisting,
   planLinkToAccount,
   planUnlink,
+  planUnlinkPending,
   planCompleteOrphan,
   findHistoricalPairs,
   type DetectionAccount,
@@ -64,6 +65,7 @@ function apply(ops: PlannedOp[]) {
   for (const op of ops) {
     if (op.op === 'insert') db.push({ ...op.row, id: `tx-${++seq}` })
     else if (op.op === 'update') db = db.map(t => t.id === op.id ? { ...t, ...op.patch } : t)
+    else if (op.op === 'delete') db = db.filter(t => t.id !== op.id)
     else db = db.map(t => t.transfer_pair_id === op.pairId ? { ...t, ...op.patch } : t)
   }
 }
@@ -492,5 +494,42 @@ describe('transferência órfã', () => {
     expect(balance(ITAU)).toBe(-100)
     expect(balance(NUBANK)).toBe(98)
     expect(db.find(t => t.is_mirror)!.amount).toBe(98)
+  })
+})
+
+// ─── Desfazer par pendente ────────────────────────────────────────────────────
+
+describe('desfazer vínculo pendente', () => {
+  const legsOf = (createdAt: (id: string) => string = () => 't0') =>
+    db.map(t => ({ id: t.id, isMirror: t.is_mirror, importHash: t.import_hash, bankTransactionId: t.bank_transaction_id, createdAt: createdAt(t.id) }))
+
+  it('saída de extrato: fica como despesa, a perna sem extrato no destino é apagada', () => {
+    importStatement(ITAU, [[-500, D, 'TED para Nubank']])
+    expect(balance(NUBANK)).toBe(500)
+
+    apply(planUnlinkPending(legsOf()))
+    expect(db).toHaveLength(1)
+    expect(db[0]).toMatchObject({ account_id: ITAU, type: 'expense', transfer_pair_id: null, category_id: null, import_hash: hash(-500, D, 'TED para Nubank') })
+    expect(balance(ITAU)).toBe(-500)
+    expect(balance(NUBANK)).toBe(0)
+  })
+
+  it('entrada de extrato: fica como receita, a principal sem extrato na origem é apagada', () => {
+    importStatement(NUBANK, [[300, D, 'TED recebida Itau']])
+    expect(balance(ITAU)).toBe(-300)
+
+    apply(planUnlinkPending(legsOf()))
+    expect(db).toHaveLength(1)
+    expect(db[0]).toMatchObject({ account_id: NUBANK, type: 'income', is_mirror: false })
+    expect(balance(NUBANK)).toBe(300)
+    expect(balance(ITAU)).toBe(0)
+  })
+
+  it('vínculo manual sem extrato: fica a transação original (mais antiga)', () => {
+    const e = plain(ITAU, -400, D, 'TED', false)
+    apply(planLinkToAccount({ id: e.id, accountId: ITAU, type: 'expense', date: D, amount: 400, description: 'TED' }, NUBANK, 'p1'))
+    apply(planUnlinkPending(legsOf(id => (id === e.id ? '2026-01-01' : '2026-02-01'))))
+    expect(db.map(t => [t.id, t.type])).toEqual([[e.id, 'expense']])
+    expect(balance(NUBANK)).toBe(0)
   })
 })

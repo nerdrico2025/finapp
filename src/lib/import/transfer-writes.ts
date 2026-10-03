@@ -15,7 +15,8 @@ type Snapshot = { id: string } & Record<string, unknown>
 /**
  * Executa as escritas planejadas por transfer-detection, na ordem. Sem
  * transação no PostgREST, então guarda o estado anterior das linhas
- * atualizadas e desfaz tudo (deleta inserts, restaura updates) se uma etapa
+ * atualizadas/apagadas e desfaz tudo (deleta inserts, restaura updates e
+ * deletes) se uma etapa
  * falhar. A trigger de saldo recalcula a partir do zero a cada escrita, então
  * o saldo final só depende do estado final das linhas.
  */
@@ -34,12 +35,17 @@ export async function executeTransferOps(
     snapshots.push(...((data ?? []) as unknown as Snapshot[]))
   }
 
+  const deleted: Snapshot[] = []
+
   const rollback = async () => {
     if (insertedIds.length > 0) {
       await supabase.from('transactions').delete().in('id', insertedIds).eq('user_id', userId)
     }
     for (const { id, ...prev } of snapshots.reverse()) {
       await supabase.from('transactions').update(prev).eq('id', id).eq('user_id', userId)
+    }
+    for (const row of deleted.reverse()) {
+      await supabase.from('transactions').insert(row)
     }
   }
 
@@ -56,6 +62,10 @@ export async function executeTransferOps(
     } else if (op.op === 'update') {
       await snapshot('id', op.id, op.patch)
       error = (await supabase.from('transactions').update(op.patch).eq('id', op.id).eq('user_id', userId)).error
+    } else if (op.op === 'delete') {
+      const { data: row } = await supabase.from('transactions').select('*').eq('id', op.id).eq('user_id', userId).maybeSingle()
+      error = (await supabase.from('transactions').delete().eq('id', op.id).eq('user_id', userId)).error
+      if (!error && row) deleted.push(row as Snapshot)
     } else {
       await snapshot('transfer_pair_id', op.pairId, op.patch)
       error = (await supabase.from('transactions').update(op.patch).eq('transfer_pair_id', op.pairId).eq('user_id', userId)).error

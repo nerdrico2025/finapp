@@ -745,9 +745,8 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
       const importHash = generateImportHash(user.id, amount, row.date, row.description)
 
       // Transferências são resolvidas ANTES da deduplicação por hash: a linha
-      // absorvida por uma perna já registrada não é duplicata, e o hash não
-      // inclui a conta — a outra perna pode ter o mesmo hash legitimamente.
-      // Por isso, aqui a checagem de reimportação é restrita à própria conta.
+      // absorvida por uma perna já registrada não é duplicata. A checagem de
+      // reimportação, como a das linhas comuns abaixo, é restrita à conta.
       if (row.transfer) {
         if (row.transfer.kind !== 'absorb') {
           const { data: sameAccount } = await supabase
@@ -786,11 +785,15 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         // 'skipped': a contraparte mudou desde a prévia — segue como income/expense.
       }
 
+      // O hash não inclui a conta: a busca é restrita à conta da linha, senão
+      // a mesma descrição/valor/data em outra conta seria tida como duplicata.
       const { data: existing } = await supabase
         .from('transactions')
         .select('id')
         .eq('user_id', user.id)
+        .eq('account_id', row.account_id)
         .eq('import_hash', importHash)
+        .limit(1)
         .maybeSingle()
 
       if (existing) {
