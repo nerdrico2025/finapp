@@ -8,6 +8,7 @@ import { Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
 import { CurrencyInput } from '@/components/ui/CurrencyInput'
 import type { Account, AccountType } from '@/types'
+import { TOTAL_BALANCE_TYPES } from '@/lib/accounts/balance'
 
 const ACCOUNT_TYPES: { value: AccountType; label: string }[] = [
   { value: 'checking', label: 'Conta Corrente' },
@@ -67,6 +68,7 @@ export function AccountForm({ defaultValues, onSubmit, onCancel, submitLabel = '
   })
 
   const selectedColor = watch('color')
+  const countsTowardTotal = TOTAL_BALANCE_TYPES.includes(watch('type'))
 
   async function handleFormSubmit(raw: AccountFormRaw) {
     setServerError(null)
@@ -149,17 +151,21 @@ export function AccountForm({ defaultValues, onSubmit, onCancel, submitLabel = '
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <input
-          id="include_in_total"
-          type="checkbox"
-          {...register('include_in_total')}
-          className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
-        />
-        <label htmlFor="include_in_total" className="text-sm text-gray-700">
-          Incluir no saldo total
-        </label>
-      </div>
+      {countsTowardTotal ? (
+        <div className="flex items-center gap-3">
+          <input
+            id="include_in_total"
+            type="checkbox"
+            {...register('include_in_total')}
+            className="w-4 h-4 rounded border-gray-300 text-emerald-600 focus:ring-emerald-500"
+          />
+          <label htmlFor="include_in_total" className="text-sm text-gray-700">
+            Incluir no saldo total
+          </label>
+        </div>
+      ) : (
+        <p className="text-xs text-gray-500">Contas deste tipo ficam fora do saldo total.</p>
+      )}
 
       <div className="flex gap-3 pt-1">
         <button

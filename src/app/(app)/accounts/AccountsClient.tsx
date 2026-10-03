@@ -11,6 +11,7 @@ import {
   Banknote,
   Building2,
   CircleDollarSign,
+  ChevronDown,
   X,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -19,6 +20,7 @@ import { createAccount, updateAccount, deleteAccount } from '@/lib/actions/accou
 import { AccountForm, type AccountFormValues } from '@/components/forms/AccountForm'
 import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import { cn } from '@/lib/utils/cn'
+import { groupAccountsBySection } from '@/lib/accounts/balance'
 import type { Account, AccountType } from '@/types'
 import { useRouter } from 'next/navigation'
 
@@ -59,7 +61,17 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
   const [upgradePrompt, setUpgradePrompt] = useState<{ feature: string; message: string } | null>(null)
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const router = useRouter()
+  const sections = groupAccountsBySection(accounts)
+
+  function toggleSection(key: string) {
+    setCollapsed(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key); else next.add(key)
+      return next
+    })
+  }
 
   function refreshPage() {
     router.refresh()
@@ -133,18 +145,52 @@ export function AccountsClient({ accounts, totalBalance: total }: Props) {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {accounts.map((account) => (
-              <AccountCard
-                key={account.id}
-                account={account}
-                onEdit={() => setModal({ type: 'edit', account })}
-                onDelete={() => {
-                  setDeleteError(null)
-                  setModal({ type: 'delete', account })
-                }}
-              />
-            ))}
+          <div className="space-y-6">
+            {sections.map((section) => {
+              const isCollapsed = collapsed.has(section.key)
+              return (
+                <section key={section.key}>
+                  <button
+                    type="button"
+                    onClick={() => toggleSection(section.key)}
+                    aria-expanded={!isCollapsed}
+                    className="w-full flex flex-wrap items-center gap-x-3 gap-y-1 mb-3 text-left group"
+                  >
+                    <ChevronDown className={cn('w-4 h-4 text-gray-400 transition-transform', isCollapsed && '-rotate-90')} />
+                    <h2 className="text-sm font-semibold text-gray-700">{section.title}</h2>
+                    <span className="text-xs text-gray-400">
+                      {section.accounts.length} {section.accounts.length === 1 ? 'conta' : 'contas'}
+                    </span>
+                    {!section.inTotal && (
+                      <span className="text-[11px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 font-medium">
+                        Fora do saldo total
+                      </span>
+                    )}
+                    <span className={cn(
+                      'ml-auto text-sm font-semibold tabular-nums',
+                      section.subtotal >= 0 ? 'text-gray-700' : 'text-red-600',
+                    )}>
+                      {formatCurrency(section.subtotal)}
+                    </span>
+                  </button>
+                  {!isCollapsed && (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                      {section.accounts.map((account) => (
+                        <AccountCard
+                          key={account.id}
+                          account={account}
+                          onEdit={() => setModal({ type: 'edit', account })}
+                          onDelete={() => {
+                            setDeleteError(null)
+                            setModal({ type: 'delete', account })
+                          }}
+                        />
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )
+            })}
           </div>
         )}
       </div>

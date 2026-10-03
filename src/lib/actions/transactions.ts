@@ -1,9 +1,13 @@
 'use server'
 
-import { createHash, randomUUID } from 'crypto'
+import { randomUUID } from 'crypto'
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
+import { generateImportHash } from '@/lib/import/import-hash'
+import { applyImportTransfer, type ImportTransferAction } from '@/lib/import/transfer-writes'
+import { buildTransferMirror } from '@/lib/import/transfer-detection'
+import { isUniqueViolation } from '@/lib/utils/db-errors'
 import { getUserPlanLimits } from '@/lib/plan-server'
 import {
   scoreDuplicate,
@@ -14,7 +18,7 @@ import {
   type DuplicateMatch,
   type ScoreInput,
 } from '@/lib/duplicate-detection'
-import type { TransactionType, TransactionStatus, CategorySource } from '@/types'
+import type { TransactionType, TransactionStatus, CategorySource, TransferStatus } from '@/types'
 
 export type { DuplicateMatch } from '@/lib/duplicate-detection'
 
@@ -59,6 +63,8 @@ export interface CSVRow {
   category_source?: CategorySource | null
   /** FITID do OFX/QFX — ver findKnownBankTransactionIds. */
   bank_transaction_id?: string | null
+  /** Linha marcada como transferência na prévia (ver transfer-detection). */
+  transfer?: ImportTransferAction | null
 }
 
 export type TransactionWithRelations = {
@@ -78,6 +84,7 @@ export type TransactionWithRelations = {
   transfer_amount: number | null
   transfer_pair_id: string | null
   is_mirror: boolean
+  transfer_status: TransferStatus | null
   tags: string[] | null
   import_hash: string | null
   bank_transaction_id: string | null
@@ -89,12 +96,6 @@ export type TransactionWithRelations = {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function generateImportHash(userId: string, amount: number, date: string, description: string): string {
-  return createHash('md5')
-    .update(`${userId}|${amount}|${date}|${(description ?? '').toLowerCase().trim()}`)
-    .digest('hex')
-}
 
 // Loose shape for rows returned by the candidate query below.
 type CandidateRow = {
@@ -240,6 +241,9 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   }
 }
 
+const DUPLICATE_IN_ACCOUNT_MESSAGE =
+  'Não foi possível salvar a transação: já existe um lançamento igual nesta conta.'
+
 export async function createTransaction(
   formData: TransactionFormData
 ): Promise<{
@@ -300,27 +304,37 @@ export async function createTransaction(
     }
   }
 
-  const { error } = await supabase
-    .from('transactions')
-    .insert({
-      user_id: user.id,
-      entity_id: entityId,
-      account_id: formData.account_id,
-      category_id: formData.category_id ?? null,
-      category_source: formData.category_id ? (formData.category_source ?? 'manual') : null,
-      type: formData.type,
-      amount: formData.amount,
-      description: formData.description ?? null,
-      notes: formData.notes ?? null,
-      date: formData.date,
-      status: formData.status ?? 'completed',
-      destination_account_id: formData.destination_account_id ?? null,
-      transfer_amount: formData.transfer_amount ?? null,
-      import_hash: importHash,
-    })
-    .select('id')
-    .single()
+  const row = {
+    user_id: user.id,
+    entity_id: entityId,
+    account_id: formData.account_id,
+    category_id: formData.category_id ?? null,
+    category_source: formData.category_id ? (formData.category_source ?? 'manual') : null,
+    type: formData.type,
+    amount: formData.amount,
+    description: formData.description ?? null,
+    notes: formData.notes ?? null,
+    date: formData.date,
+    status: formData.status ?? 'completed',
+    destination_account_id: formData.destination_account_id ?? null,
+    transfer_amount: formData.transfer_amount ?? null,
+    import_hash: importHash as string | null,
+  }
+  const insert = (values: typeof row) =>
+    supabase.from('transactions').insert(values).select('id').single()
 
+  let { error } = await insert(row)
+
+  // O usuário confirmou "salvar mesmo assim", mas já existe nesta conta uma
+  // transação com o mesmo hash (transactions_dedup_idx). O hash só serve à
+  // deduplicação da importação: grava esta sem ele, uma única vez.
+  if (error && formData.force && isUniqueViolation(error)) {
+    ;({ error } = await insert({ ...row, import_hash: null }))
+    if (error) return { error: DUPLICATE_IN_ACCOUNT_MESSAGE }
+  }
+
+  // Sem confirmação, não repete — mas nunca expõe a mensagem do Postgres.
+  if (isUniqueViolation(error)) return { error: DUPLICATE_IN_ACCOUNT_MESSAGE }
   if (error) return { error: error.message }
 
   revalidatePath('/transactions')
@@ -346,7 +360,6 @@ export async function createTransfer(
 
   const entityId = await getActiveEntityId(supabase, user.id)
   const pairId = randomUUID()
-  const receivedAmount = formData.transfer_amount ?? formData.amount
 
   // Primary record — drives balance changes in trigger (is_mirror=false)
   const { error: e1 } = await supabase.from('transactions').insert({
@@ -361,6 +374,7 @@ export async function createTransfer(
     transfer_amount: formData.transfer_amount ?? null,
     transfer_pair_id: pairId,
     is_mirror: false,
+    transfer_status: 'matched',
     status: 'completed',
   })
 
@@ -370,14 +384,14 @@ export async function createTransfer(
   const { error: e2 } = await supabase.from('transactions').insert({
     user_id: user.id,
     entity_id: entityId,
-    account_id: formData.destination_account_id,
-    type: 'transfer',
-    amount: receivedAmount,
-    date: formData.date,
-    description: formData.description ?? null,
-    destination_account_id: formData.account_id,
-    transfer_pair_id: pairId,
-    is_mirror: true,
+    ...buildTransferMirror({
+      accountId: formData.account_id,
+      destinationAccountId: formData.destination_account_id,
+      amount: formData.amount,
+      transferAmount: formData.transfer_amount ?? null,
+      date: formData.date,
+      description: formData.description ?? null,
+    }, pairId),
     status: 'completed',
   })
 
@@ -698,6 +712,10 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
   duplicates: number
   errors: number
   errorDetails: string[]
+  /** Linhas gravadas como perna de transferência (par novo ou convertido). */
+  transfers: number
+  /** Linhas absorvidas por uma perna já registrada — nenhuma linha nova. */
+  absorbed: number
 }> {
   const supabase = await createClient()
 
@@ -705,13 +723,15 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) return { inserted: 0, duplicates: 0, errors: 1, errorDetails: ['Não autenticado'] }
+  if (!user) return { inserted: 0, duplicates: 0, errors: 1, errorDetails: ['Não autenticado'], transfers: 0, absorbed: 0 }
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
   let inserted = 0
   let duplicates = 0
   let errors = 0
+  let transfers = 0
+  let absorbed = 0
   const errorDetails: string[] = []
 
   for (const row of rows) {
@@ -738,11 +758,57 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
 
       const importHash = generateImportHash(user.id, amount, row.date, row.description)
 
+      // Transferências são resolvidas ANTES da deduplicação por hash: a linha
+      // absorvida por uma perna já registrada não é duplicata. A checagem de
+      // reimportação, como a das linhas comuns abaixo, é restrita à conta.
+      if (row.transfer) {
+        if (row.transfer.kind !== 'absorb') {
+          const { data: sameAccount } = await supabase
+            .from('transactions')
+            .select('id')
+            .eq('user_id', user.id)
+            .eq('account_id', row.account_id)
+            .eq('import_hash', importHash)
+            .limit(1)
+          if (sameAccount && sameAccount.length > 0) {
+            duplicates++
+            continue
+          }
+        }
+
+        const t = await applyImportTransfer(
+          supabase, user.id, entityId,
+          {
+            accountId: row.account_id,
+            date: row.date,
+            description: row.description,
+            amount: row.amount,
+            importHash,
+            bankTransactionId: row.bank_transaction_id ?? null,
+          },
+          row.transfer,
+          randomUUID,
+        )
+        if (t.error) {
+          errors++
+          errorDetails.push(`${row.date} ${row.description}: ${t.error}`)
+          continue
+        }
+        if (t.result === 'duplicate') { duplicates++; continue }
+        if (t.result === 'absorbed') { absorbed++; continue }
+        if (t.result === 'linked') { transfers++; continue }
+        // 'skipped': a contraparte mudou desde a prévia — segue como income/expense.
+      }
+
+      // O hash não inclui a conta: a busca é restrita à conta da linha, senão
+      // a mesma descrição/valor/data em outra conta seria tida como duplicata.
       const { data: existing } = await supabase
         .from('transactions')
         .select('id')
         .eq('user_id', user.id)
+        .eq('account_id', row.account_id)
         .eq('import_hash', importHash)
+        .limit(1)
         .maybeSingle()
 
       if (existing) {
@@ -765,6 +831,13 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         import_hash: importHash,
       })
 
+      // Índice único (conta + hash, ou FITID): outra importação gravou a mesma
+      // linha entre a checagem acima e este insert — é duplicata, não erro.
+      if (isUniqueViolation(error)) {
+        duplicates++
+        continue
+      }
+
       if (error) {
         errors++
         errorDetails.push(`${row.date} ${row.description}: ${error.message}`)
@@ -778,11 +851,11 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
     }
   }
 
-  if (inserted > 0) {
+  if (inserted > 0 || transfers > 0 || absorbed > 0) {
     revalidatePath('/transactions')
     revalidatePath('/accounts')
     revalidatePath('/dashboard')
   }
 
-  return { inserted, duplicates, errors, errorDetails }
+  return { inserted, duplicates, errors, errorDetails, transfers, absorbed }
 }

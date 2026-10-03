@@ -4,13 +4,17 @@ import { useRouter, usePathname } from 'next/navigation'
 import { useEffect, useRef, useState } from 'react'
 import {
   Plus, Upload, ChevronLeft, ChevronRight, ChevronDown, Trash2, Pencil,
-  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X,
+  ArrowUpCircle, ArrowDownCircle, ArrowLeftRight, X, Link2, Unlink, ListChecks, AlertTriangle, MapPin,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { deleteTransaction } from '@/lib/actions/transactions'
 import { TransactionForm } from '@/components/forms/TransactionForm'
 import { ImportCSVForm } from '@/components/forms/ImportCSVForm'
+import { LinkTransferForm } from '@/components/transfers/LinkTransferForm'
+import { ReviewTransfersForm } from '@/components/transfers/ReviewTransfersForm'
+import { SetTransferDestinationForm } from '@/components/transfers/SetTransferDestinationForm'
+import { unlinkTransfer } from '@/lib/actions/transfers'
 import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import { cn } from '@/lib/utils/cn'
 import type { Account, Category, TransactionType } from '@/types'
@@ -50,7 +54,7 @@ interface Props {
   totalExpenses: number
 }
 
-type Modal = 'closed' | 'create' | 'import' | 'edit'
+type Modal = 'closed' | 'create' | 'import' | 'edit' | 'link' | 'review' | 'destination'
 
 export function TransactionsClient({
   transactions,
@@ -66,6 +70,7 @@ export function TransactionsClient({
   const [modal, setModal] = useState<Modal>('closed')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [editingTx, setEditingTx] = useState<TransactionWithRelations | null>(null)
+  const [linkingTx, setLinkingTx] = useState<TransactionWithRelations | null>(null)
 
   function openEdit(tx: TransactionWithRelations) {
     setEditingTx(tx)
@@ -123,6 +128,32 @@ export function TransactionsClient({
     router.refresh()
   }
 
+  function openLink(tx: TransactionWithRelations) {
+    setLinkingTx(tx)
+    setModal('link')
+  }
+
+  function openSetDestination(tx: TransactionWithRelations) {
+    setLinkingTx(tx)
+    setModal('destination')
+  }
+
+  function closeLink() {
+    setModal('closed')
+    setLinkingTx(null)
+  }
+
+  async function handleUnlink(tx: TransactionWithRelations) {
+    const msg = tx.transfer_status === 'pending'
+      ? 'Desfazer o vínculo desta transferência pendente? O lançamento que veio do extrato volta a ser receita ou despesa, sem categoria, e o lançamento criado automaticamente na outra conta (ainda sem extrato) será apagado.'
+      : 'Desfazer o vínculo desta transferência? As duas transações voltam a ser receita e despesa, sem categoria.'
+    if (!confirm(msg)) return
+    const res = await unlinkTransfer(tx.id)
+    if (res.error) { toast.error(res.error); return }
+    toast.success('Vínculo desfeito')
+    router.refresh()
+  }
+
   const incomeTotal = totalIncome
   const expenseTotal = totalExpenses
 
@@ -140,6 +171,14 @@ export function TransactionsClient({
             </p>
           </div>
           <div className="flex gap-2">
+            <button
+              onClick={() => setModal('review')}
+              title="Revisar transferências antigas"
+              className="flex items-center gap-2 px-3 py-2 border border-gray-200 text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors"
+            >
+              <ListChecks className="w-4 h-4" />
+              <span className="hidden sm:inline">Revisar transferências antigas</span>
+            </button>
             <UpgradeGate
               feature="canImport"
               fallback={
@@ -318,6 +357,9 @@ export function TransactionsClient({
                   deleting={deletingId === tx.id}
                   onDelete={() => handleDelete(tx)}
                   onEdit={() => openEdit(tx)}
+                  onLink={() => openLink(tx)}
+                  onUnlink={() => handleUnlink(tx)}
+                  onSetDestination={() => openSetDestination(tx)}
                 />
               ))}
             </ul>
@@ -374,6 +416,41 @@ export function TransactionsClient({
         </Modal>
       )}
 
+      {/* Link-as-transfer modal */}
+      {modal === 'link' && linkingTx && (
+        <Modal title="Vincular como transferência" onClose={closeLink} wide>
+          <LinkTransferForm
+            tx={linkingTx}
+            accounts={accounts}
+            onSuccess={() => { toast.success('Transferência vinculada!'); closeLink(); router.refresh() }}
+            onCancel={closeLink}
+          />
+        </Modal>
+      )}
+
+      {/* Orphan transfer: set destination */}
+      {modal === 'destination' && linkingTx && (
+        <Modal title="Definir conta destino" onClose={closeLink} wide>
+          <SetTransferDestinationForm
+            tx={linkingTx}
+            accounts={accounts}
+            onSuccess={() => { toast.success('Conta destino definida!'); closeLink(); router.refresh() }}
+            onCancel={closeLink}
+          />
+        </Modal>
+      )}
+
+      {/* Historical transfer review */}
+      {modal === 'review' && (
+        <Modal title="Revisar transferências antigas" onClose={() => setModal('closed')} extraWide>
+          <ReviewTransfersForm
+            accounts={accounts}
+            onSuccess={() => { setModal('closed'); router.refresh() }}
+            onCancel={() => setModal('closed')}
+          />
+        </Modal>
+      )}
+
       {/* Edit modal */}
       {modal === 'edit' && editingTx && (
         <Modal title="Editar transação" onClose={closeEdit} wide>
@@ -398,17 +475,25 @@ function TransactionRow({
   deleting,
   onDelete,
   onEdit,
+  onLink,
+  onUnlink,
+  onSetDestination,
 }: {
   tx: TransactionWithRelations
   deleting: boolean
   onDelete: () => void
   onEdit: () => void
+  onLink: () => void
+  onUnlink: () => void
+  onSetDestination: () => void
 }) {
   const isIncome = tx.type === 'income'
   const isTransfer = tx.type === 'transfer'
   // Mirror = incoming transfer (credit side); Primary = outgoing (debit side)
   const isTransferIn = isTransfer && tx.is_mirror
   const otherAccount = isTransfer ? tx.destination_account : null
+  // Órfã: transferência sem destino e sem par (só debita a origem).
+  const isOrphan = isTransfer && !tx.destination_account_id && !tx.transfer_pair_id && !tx.is_mirror
 
   return (
     <li className="flex items-center gap-3 px-5 py-3.5 group hover:bg-gray-50 transition-colors">
@@ -434,13 +519,26 @@ function TransactionRow({
           {tx.description ?? (isTransfer ? 'Transferência' : tx.type === 'income' ? 'Receita' : 'Despesa')}
         </p>
         <div className="flex items-center gap-2 mt-0.5">
-          {isTransfer ? (
+          {isOrphan ? (
+            <span className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded-full font-medium bg-orange-50 text-orange-700">
+              <AlertTriangle className="w-3 h-3" />
+              Transferência sem destino
+            </span>
+          ) : isTransfer ? (
             <span className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-blue-50 text-blue-600">
               {isTransferIn
                 ? `← ${otherAccount?.name ?? tx.account?.name ?? 'Transferência'}`
                 : `→ ${otherAccount?.name ?? 'Transferência'}`}
             </span>
-          ) : (
+          ) : null}
+          {isTransfer && tx.transfer_status === 'pending' ? (
+            <span
+              className="text-xs px-1.5 py-0.5 rounded-full font-medium bg-amber-50 text-amber-700"
+              title="Confirmada quando o extrato da outra conta for importado"
+            >
+              Pendente
+            </span>
+          ) : isTransfer ? null : (
             <>
               {tx.category && (
                 <span
@@ -471,6 +569,31 @@ function TransactionRow({
 
       {/* Actions */}
       <div className="opacity-0 group-hover:opacity-100 flex items-center gap-1 transition-all">
+        {isOrphan ? (
+          <button
+            onClick={onSetDestination}
+            title="Definir conta destino"
+            className="p-1.5 text-gray-400 hover:text-orange-600 hover:bg-orange-50 rounded-lg transition-colors"
+          >
+            <MapPin className="w-3.5 h-3.5" />
+          </button>
+        ) : isTransfer && tx.transfer_pair_id ? (
+          <button
+            onClick={onUnlink}
+            title="Desfazer vínculo"
+            className="p-1.5 text-gray-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-colors"
+          >
+            <Unlink className="w-3.5 h-3.5" />
+          </button>
+        ) : !isTransfer ? (
+          <button
+            onClick={onLink}
+            title="Vincular como transferência"
+            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+          >
+            <Link2 className="w-3.5 h-3.5" />
+          </button>
+        ) : null}
         <button
           onClick={onEdit}
           className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
@@ -591,7 +714,7 @@ function Modal({
       <div className="fixed inset-0 bg-black/30 backdrop-blur-sm" onClick={onClose} />
       <div className={cn(
         'relative bg-white rounded-2xl shadow-xl p-6 max-h-[90vh] overflow-y-auto',
-        extraWide ? 'w-full max-w-3xl' : wide ? 'w-full max-w-lg' : 'w-full max-w-md'
+        extraWide ? 'w-full max-w-5xl' : wide ? 'w-full max-w-lg' : 'w-full max-w-md'
       )}>
         <div className="flex items-center justify-between mb-5">
           <h2 className="text-base font-semibold text-gray-900">{title}</h2>
