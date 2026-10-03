@@ -241,6 +241,9 @@ export async function getTransactions(filters: TransactionFilters = {}) {
   }
 }
 
+const DUPLICATE_IN_ACCOUNT_MESSAGE =
+  'Não foi possível salvar a transação: já existe um lançamento igual nesta conta.'
+
 export async function createTransaction(
   formData: TransactionFormData
 ): Promise<{
@@ -327,11 +330,11 @@ export async function createTransaction(
   // deduplicação da importação: grava esta sem ele, uma única vez.
   if (error && formData.force && isUniqueViolation(error)) {
     ;({ error } = await insert({ ...row, import_hash: null }))
-    if (error) {
-      return { error: 'Não foi possível salvar a transação: já existe um lançamento igual nesta conta.' }
-    }
+    if (error) return { error: DUPLICATE_IN_ACCOUNT_MESSAGE }
   }
 
+  // Sem confirmação, não repete — mas nunca expõe a mensagem do Postgres.
+  if (isUniqueViolation(error)) return { error: DUPLICATE_IN_ACCOUNT_MESSAGE }
   if (error) return { error: error.message }
 
   revalidatePath('/transactions')

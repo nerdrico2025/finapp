@@ -100,11 +100,12 @@ describe('violação de unicidade (23505)', () => {
     expect(res.error).not.toContain('duplicate key')
   })
 
-  it('createTransaction sem confirmação: comportamento atual (sem repetição)', async () => {
+  it('createTransaction sem confirmação: sem repetição, e mensagem amigável em vez da do Postgres', async () => {
     fake = createFakeSupabase({ failInsert: () => UNIQUE_ERROR })
     const res = await createTransaction(form)
 
     expect(fake.inserts).toHaveLength(1)
-    expect(res.error).toBe(UNIQUE_ERROR.message)
+    expect(res.error).toBe('Não foi possível salvar a transação: já existe um lançamento igual nesta conta.')
+    expect(res.error).not.toContain('duplicate key')
   })
 })
