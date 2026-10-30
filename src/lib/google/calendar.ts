@@ -83,7 +83,7 @@ async function upsertSingleEvent(
   summary: string,
   description: string,
   date: string,
-  rrule: string,
+  rrule: string | null,
   existingEventId?: string | null,
 ): Promise<string | null> {
   const event = {
@@ -91,7 +91,7 @@ async function upsertSingleEvent(
     description,
     start: { dateTime: `${date}T09:00:00`, timeZone: 'America/Sao_Paulo' },
     end: { dateTime: `${date}T09:30:00`, timeZone: 'America/Sao_Paulo' },
-    recurrence: [rrule],
+    ...(rrule && { recurrence: [rrule] }),
     // method: 'popup' é o que o app do Google Calendar transforma em
     // notificação push no celular (diferente de 'email', que só manda
     // e-mail) — useDefault: false porque senão o Google aplica os lembretes
@@ -182,6 +182,40 @@ export async function upsertCalendarEvents(params: {
       rrule,
       params.existingDueEventId,
     ),
+  ])
+
+  return { reminderEventId, dueEventId }
+}
+
+/**
+ * Eventos únicos (sem recorrência) de vencimento de uma opção: D-7 e o próprio
+ * dia. Datas já passadas não geram evento, e o evento antigo é removido.
+ */
+export async function upsertOptionExpiryEvents(params: {
+  userId: string
+  series: string
+  expirationDate: string
+  today: string
+  existingReminderEventId?: string | null
+  existingDueEventId?: string | null
+}): Promise<{ reminderEventId: string | null; dueEventId: string | null }> {
+  const accessToken = await getValidAccessToken(params.userId)
+  if (!accessToken) return { reminderEventId: null, dueEventId: null }
+
+  const summary = `Vencimento de ${params.series}: o que aconteceu? Encerre a operação.`
+  const description = `Vence em ${formatDate(params.expirationDate)}. Alerta via FinApp.`
+
+  const upsertOrRemove = async (date: string, prefix: string, existingId?: string | null) => {
+    if (date >= params.today) {
+      return upsertSingleEvent(accessToken, `${prefix} ${summary}`, description, date, null, existingId)
+    }
+    if (existingId) await deleteCalendarEvent(params.userId, existingId)
+    return null
+  }
+
+  const [reminderEventId, dueEventId] = await Promise.all([
+    upsertOrRemove(subtractDays(params.expirationDate, 7), '🔔', params.existingReminderEventId),
+    upsertOrRemove(params.expirationDate, '📅', params.existingDueEventId),
   ])
 
   return { reminderEventId, dueEventId }

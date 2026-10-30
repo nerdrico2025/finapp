@@ -3,22 +3,31 @@
 import { useState, useMemo, useTransition } from 'react'
 import {
   Plus, Pencil, Trash2, TrendingUp, TrendingDown, Minus,
-  X, ChevronDown,
+  X, AlertTriangle, RefreshCw, CheckCircle2,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
-import { createTrade, updateTrade, deleteTrade } from '@/lib/actions/trades'
-import type { TradeOperation } from '@/types'
+import {
+  createTrade, updateTrade, deleteTrade, updateCurrentPremium, closeOption,
+  type CloseOptionData,
+} from '@/lib/actions/trades'
+import {
+  computeOption, optionInputFromTrade, validateOption, summarizeOptions,
+  daysBetween, todayInBrazil, parseDecimal,
+  type OptionInput,
+} from '@/lib/options/calc'
+import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TradeTab = 'swing' | 'options'
 type Period = 'month' | '3m' | '6m' | 'year' | 'custom'
-type OptionStatus = 'open' | 'exercised' | 'expired' | 'closed'
 
 interface Props {
   initialTrades: TradeOperation[]
+  /** Vem do aviso de vencimento: abre direto o fluxo "Encerrar operação". */
+  closeOptionId?: string
 }
 
 interface Calculated {
@@ -27,6 +36,8 @@ interface Calculated {
   rentPct: number | null
   toTarget: number | null
   toStop: number | null
+  resultKind?: 'realized' | 'unrealized' | null
+  rentLabel?: string
 }
 
 // ─── Calculations ─────────────────────────────────────────────────────────────
@@ -54,30 +65,16 @@ function calcTrade(t: TradeOperation): Calculated {
     }
   }
 
-  // options — use premium as the cost basis
-  const prem = t.premium ?? t.entry_price
-  const invested = prem * t.quantity * 100
-  if (t.option_status === 'expired') {
-    const resultado = -invested - t.fees
-    return {
-      invested,
-      resultado,
-      rentPct: invested > 0 ? (resultado / invested) * 100 : null,
-      toTarget: null,
-      toStop: null,
-    }
+  const c = computeOption(optionInputFromTrade(t))
+  return {
+    invested: c.premiumTotal,
+    resultado: c.result,
+    rentPct: c.returnPct,
+    toTarget: null,
+    toStop: null,
+    resultKind: c.resultKind,
+    rentLabel: c.returnBasis === 'exposure' ? 'sobre exposição' : undefined,
   }
-  if ((t.option_status === 'exercised' || t.option_status === 'closed') && t.exit_price != null) {
-    const resultado = (t.exit_price - prem) * t.quantity * 100 - t.fees
-    return {
-      invested,
-      resultado,
-      rentPct: invested > 0 ? (resultado / invested) * 100 : null,
-      toTarget: null,
-      toStop: null,
-    }
-  }
-  return { invested, resultado: null, rentPct: null, toTarget: null, toStop: null }
 }
 
 // ─── Period helpers ───────────────────────────────────────────────────────────
@@ -114,8 +111,16 @@ function fmtNum(v: number, decimals = 2) {
   }).format(v)
 }
 
-function parseNum(s: string): number {
-  return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
+const parseNum = parseDecimal
+
+function fmtPremium(v: number) {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency', currency: 'BRL', minimumFractionDigits: 2, maximumFractionDigits: 4,
+  }).format(v)
+}
+
+function fmtDayMonth(iso: string) {
+  return new Intl.DateTimeFormat('pt-BR', { day: '2-digit', month: '2-digit' }).format(new Date(iso))
 }
 
 const PERIOD_OPTS: { value: Period; label: string }[] = [
@@ -145,6 +150,7 @@ const emptySwing = (): FormState => ({
   stop_loss: '', target_price: '',
   option_type: 'call', option_series: '', expiration_date: '',
   premium: '', option_status: 'open',
+  position: 'holder', strike: '',
 })
 
 const emptyOptions = (): FormState => ({
@@ -155,6 +161,7 @@ const emptyOptions = (): FormState => ({
   stop_loss: '', target_price: '',
   option_type: 'call', option_series: '', expiration_date: '',
   premium: '', option_status: 'open',
+  position: 'holder', strike: '',
 })
 
 interface FormState {
@@ -175,13 +182,15 @@ interface FormState {
   expiration_date: string // options: expiration date
   premium: string         // options: premium per share
   option_status: OptionStatus
+  position: OptionPosition
+  strike: string
 }
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function TradeOperations({ initialTrades }: Props) {
+export function TradeOperations({ initialTrades, closeOptionId }: Props) {
   const [trades, setTrades] = useState<TradeOperation[]>(initialTrades)
-  const [activeTab, setActiveTab] = useState<TradeTab>('swing')
+  const [activeTab, setActiveTab] = useState<TradeTab>(closeOptionId ? 'options' : 'swing')
   const [period, setPeriod] = useState<Period>('year')
   const [customRange, setCustomRange] = useState({ start: '', end: '' })
   const [formOpen, setFormOpen] = useState(false)
@@ -189,6 +198,10 @@ export function TradeOperations({ initialTrades }: Props) {
   const [formTab, setFormTab] = useState<TradeTab>('swing')
   const [form, setForm] = useState<FormState>(emptySwing())
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
+  const [closing, setClosing] = useState<TradeOperation | null>(
+    () => initialTrades.find((t) => t.id === closeOptionId && t.option_status === 'open') ?? null
+  )
+  const [updatingPremium, setUpdatingPremium] = useState<TradeOperation | null>(null)
   const [isPending, startTransition] = useTransition()
 
   const { start: periodStart, end: periodEnd } = getPeriodRange(period, customRange)
@@ -214,7 +227,7 @@ export function TradeOperations({ initialTrades }: Props) {
     let profit = 0, loss = 0, wins = 0, total = 0, rentSum = 0
     for (const t of summaryTrades) {
       const c = calcs.get(t.id)
-      if (c?.resultado != null) {
+      if (c?.resultado != null && c.resultKind !== 'unrealized') {
         total++
         if (c.resultado > 0) { profit += c.resultado; wins++ }
         else loss += c.resultado
@@ -257,7 +270,9 @@ export function TradeOperations({ initialTrades }: Props) {
       option_series: t.option_series ?? '',
       expiration_date: t.expiration_date ?? '',
       premium: t.premium != null ? fmtNum(t.premium, 4) : '',
-      option_status: (t.option_status as OptionStatus) ?? 'open',
+      option_status: t.option_status ?? 'open',
+      position: t.position,
+      strike: t.strike != null ? fmtNum(t.strike, 4) : '',
     })
     setFormOpen(true)
   }
@@ -287,42 +302,40 @@ export function TradeOperations({ initialTrades }: Props) {
         toStop: (stp && ep > 0) ? ((stp - ep) / ep) * 100 : null,
       }
     }
-    const prem = form.premium ? parseNum(form.premium) : ep
-    const invested = prem * qty * 100
-    if (form.option_status === 'expired') {
-      const resultado = -invested - fees
-      return { invested, resultado, rentPct: invested > 0 ? (resultado / invested) * 100 : null, toTarget: null, toStop: null }
-    }
-    if ((form.option_status === 'exercised' || form.option_status === 'closed') && xp != null) {
-      const resultado = (xp - prem) * qty * 100 - fees
-      return { invested, resultado, rentPct: invested > 0 ? (resultado / invested) * 100 : null, toTarget: null, toStop: null }
-    }
-    return { invested, resultado: null, rentPct: null, toTarget: null, toStop: null }
+    return { invested: 0, resultado: null, rentPct: null, toTarget: null, toStop: null }
   }, [form, formTab])
 
   function handleSubmit() {
     const qty = parseNum(form.quantity)
     const ep = parseNum(form.entry_price)
     const prem = parseNum(form.premium)
-    const priceOk = formTab === 'swing' ? ep > 0 : prem > 0
-    if (!form.ticker || !form.entry_date || !priceOk || qty <= 0) {
+    const strike = form.strike ? parseNum(form.strike) : null
+    const priceOk = formTab === 'swing'
+      ? ep > 0
+      : validateOption({ quantity: qty, strike, premium: prem }).errors.length === 0
+    const optionFieldsOk = formTab === 'swing' || (!!form.option_series && !!form.expiration_date)
+    if (!form.ticker || !form.entry_date || !priceOk || !optionFieldsOk || qty <= 0) {
       toast.error('Preencha os campos obrigatórios')
       return
     }
 
-    const isClosed = formTab === 'swing' ? form.status === 'closed' : form.option_status !== 'open'
+    const isClosed = formTab === 'swing' && form.status === 'closed'
     const xp = form.exit_price ? parseNum(form.exit_price) : null
+
+    const lifecycle = {
+      exit_date: (isClosed && form.exit_date) ? form.exit_date : null,
+      exit_price: (isClosed && xp != null) ? xp : null,
+      status: (isClosed ? 'closed' : 'open') as 'open' | 'closed',
+      option_status: formTab === 'options' ? ('open' as const) : null,
+    }
 
     const payload = {
       type: formTab,
       ticker: form.ticker.toUpperCase(),
       entry_date: form.entry_date,
-      exit_date: (isClosed && form.exit_date) ? form.exit_date : null,
       entry_price: formTab === 'swing' ? ep : 0,
-      exit_price: (isClosed && xp != null) ? xp : null,
       quantity: qty,
       fees: parseNum(form.fees),
-      status: (isClosed ? 'closed' : 'open') as 'open' | 'closed',
       notes: form.notes || null,
       stop_loss: form.stop_loss ? parseNum(form.stop_loss) : null,
       target_price: form.target_price ? parseNum(form.target_price) : null,
@@ -330,29 +343,32 @@ export function TradeOperations({ initialTrades }: Props) {
       option_series: (formTab === 'options' && form.option_series) ? form.option_series : null,
       expiration_date: (formTab === 'options' && form.expiration_date) ? form.expiration_date : null,
       premium: (formTab === 'options' && form.premium) ? parseNum(form.premium) : null,
-      option_status: formTab === 'options' ? form.option_status : null,
+      position: formTab === 'options' ? form.position : ('holder' as const),
+      strike: formTab === 'options' ? strike : null,
     }
 
     startTransition(async () => {
       if (editing) {
-        const { error } = await updateTrade(editing.id, payload)
+        // Em opções, status e saída só mudam pelo fluxo "Encerrar operação".
+        const changes = formTab === 'options' ? payload : { ...payload, ...lifecycle }
+        const { error } = await updateTrade(editing.id, changes)
         if (error) { toast.error(error); return }
-        setTrades((prev) => prev.map((t) => t.id === editing.id ? { ...t, ...payload } : t))
+        setTrades((prev) => prev.map((t) => t.id === editing.id ? { ...t, ...changes } : t))
         toast.success('Operação atualizada')
       } else {
-        const { error, id } = await createTrade(payload)
+        const { error, id } = await createTrade({ ...payload, ...lifecycle })
         if (error) { toast.error(error); return }
         const newTrade: TradeOperation = {
           id: id!, user_id: '', entity_id: null,
           type: payload.type,
           ticker: payload.ticker,
           entry_date: payload.entry_date,
-          exit_date: payload.exit_date ?? null,
+          exit_date: lifecycle.exit_date,
           entry_price: payload.entry_price,
-          exit_price: payload.exit_price ?? null,
+          exit_price: lifecycle.exit_price,
           quantity: payload.quantity,
           fees: payload.fees ?? 0,
-          status: payload.status,
+          status: lifecycle.status,
           notes: payload.notes ?? null,
           stop_loss: payload.stop_loss ?? null,
           target_price: payload.target_price ?? null,
@@ -360,7 +376,14 @@ export function TradeOperations({ initialTrades }: Props) {
           option_type: payload.option_type ?? null,
           expiration_date: payload.expiration_date ?? null,
           premium: payload.premium ?? null,
-          option_status: payload.option_status ?? null,
+          option_status: lifecycle.option_status,
+          position: payload.position,
+          strike: payload.strike,
+          underlying_price_at_exercise: null,
+          current_premium: null,
+          current_premium_updated_at: null,
+          google_event_id: null,
+          google_reminder_event_id: null,
           created_at: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         }
@@ -368,6 +391,44 @@ export function TradeOperations({ initialTrades }: Props) {
         toast.success('Operação registrada')
       }
       setFormOpen(false)
+    })
+  }
+
+  function handleUpdatePremium(id: string, value: number) {
+    startTransition(async () => {
+      const { error, updatedAt } = await updateCurrentPremium(id, value)
+      if (error) { toast.error(error); return }
+      setTrades((prev) => prev.map((t) => t.id === id
+        ? { ...t, current_premium: value, current_premium_updated_at: updatedAt ?? null }
+        : t))
+      setUpdatingPremium(null)
+      toast.success('Prêmio atualizado')
+    })
+  }
+
+  function closeClosingModal() {
+    setClosing(null)
+    if (closeOptionId) window.history.replaceState(null, '', '/investments')
+  }
+
+  function handleCloseOption(id: string, data: CloseOptionData) {
+    startTransition(async () => {
+      const { error } = await closeOption(id, data)
+      if (error) { toast.error(error); return }
+      setTrades((prev) => prev.map((t) => t.id === id
+        ? {
+            ...t,
+            status: 'closed' as const,
+            option_status: data.outcome,
+            exit_date: data.exit_date,
+            exit_price: data.outcome === 'closed' ? data.exit_premium : null,
+            underlying_price_at_exercise: data.outcome === 'exercised' ? data.underlying_price : null,
+            google_event_id: null,
+            google_reminder_event_id: null,
+          }
+        : t))
+      closeClosingModal()
+      toast.success('Operação encerrada')
     })
   }
 
@@ -506,12 +567,17 @@ export function TradeOperations({ initialTrades }: Props) {
               Nenhuma operação de Opções no período.
             </div>
           ) : (
-            <OptionsTable
-              trades={optionsTrades}
-              calcs={calcs}
-              onEdit={openEdit}
-              onDelete={(id) => setDeleteConfirm(id)}
-            />
+            <>
+              <OptionsTotals trades={optionsTrades} />
+              <OptionsTable
+                trades={optionsTrades}
+                calcs={calcs}
+                onEdit={openEdit}
+                onDelete={(id) => setDeleteConfirm(id)}
+                onUpdatePremium={setUpdatingPremium}
+                onCloseOption={setClosing}
+              />
+            </>
           )}
         </div>
       )}
@@ -538,6 +604,30 @@ export function TradeOperations({ initialTrades }: Props) {
               </button>
             </div>
           </div>
+        </ModalOverlay>
+      )}
+
+      {/* Update current premium */}
+      {updatingPremium && (
+        <ModalOverlay onClose={() => setUpdatingPremium(null)}>
+          <UpdatePremiumForm
+            trade={updatingPremium}
+            isPending={isPending}
+            onSubmit={(value) => handleUpdatePremium(updatingPremium.id, value)}
+            onClose={() => setUpdatingPremium(null)}
+          />
+        </ModalOverlay>
+      )}
+
+      {/* Close option */}
+      {closing && (
+        <ModalOverlay onClose={closeClosingModal}>
+          <CloseOptionForm
+            trade={closing}
+            isPending={isPending}
+            onSubmit={(data) => handleCloseOption(closing.id, data)}
+            onClose={closeClosingModal}
+          />
         </ModalOverlay>
       )}
 
@@ -695,12 +785,35 @@ function SwingTable({ trades, calcs, onEdit, onDelete }: {
 
 // ─── Options Table ─────────────────────────────────────────────────────────────
 
-function OptionsTable({ trades, calcs, onEdit, onDelete }: {
+function OptionsTotals({ trades }: { trades: TradeOperation[] }) {
+  const s = useMemo(() => summarizeOptions(trades.map(optionInputFromTrade)), [trades])
+  const items = [
+    { label: 'Capital pago (titular)', value: s.paid },
+    { label: 'Prêmio recebido (lançador)', value: s.received },
+    { label: 'Exposição em aberto (puts lançadas)', value: s.openExposure },
+    { label: 'Resultado não realizado', value: s.unrealizedResult },
+  ]
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-5 py-3 border-b border-gray-50 text-xs">
+      {items.map((item) => (
+        <div key={item.label}>
+          <p className="text-gray-400 mb-0.5">{item.label}</p>
+          <p className="font-semibold text-gray-700 tabular-nums">{formatCurrency(item.value)}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function OptionsTable({ trades, calcs, onEdit, onDelete, onUpdatePremium, onCloseOption }: {
   trades: TradeOperation[]
   calcs: Map<string, Calculated>
   onEdit: (t: TradeOperation) => void
   onDelete: (id: string) => void
+  onUpdatePremium: (t: TradeOperation) => void
+  onCloseOption: (t: TradeOperation) => void
 }) {
+  const todayBr = todayInBrazil()
   const open = trades.filter((t) => t.option_status === 'open')
   const exercised = trades.filter((t) => t.option_status === 'exercised')
   const expired = trades.filter((t) => t.option_status === 'expired')
@@ -708,7 +821,7 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
 
   function GroupHeader({ label, count, color }: { label: string; count: number; color: string }) {
     return (
-      <tr><td colSpan={13} className={cn('px-4 py-2 text-xs font-semibold', color)}>{label} ({count})</td></tr>
+      <tr><td colSpan={14} className={cn('px-4 py-2 text-xs font-semibold', color)}>{label} ({count})</td></tr>
     )
   }
 
@@ -716,6 +829,8 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
     const c = calcs.get(t.id)
     const pos = c?.resultado != null && c.resultado >= 0
     const isExpired = t.option_status === 'expired'
+    const isOpen = t.option_status === 'open'
+    const daysLeft = isOpen && t.expiration_date ? daysBetween(todayBr, t.expiration_date) : null
     return (
       <tr className="border-t border-gray-50 hover:bg-gray-50">
         <td className="px-4 py-2.5">
@@ -725,6 +840,7 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
         </td>
         <td className="px-4 py-2.5 font-semibold text-gray-900">{t.ticker}</td>
         <td className="px-4 py-2.5 text-gray-700">{t.option_series ?? '—'}</td>
+        <td className="px-4 py-2.5 text-gray-700">{t.position === 'holder' ? 'Titular' : 'Lançador'}</td>
         <td className="px-4 py-2.5">
           {t.option_type && (
             <span className={cn('text-xs font-semibold px-1.5 py-0.5 rounded', t.option_type === 'call' ? 'bg-emerald-100 text-emerald-700' : 'bg-red-100 text-red-700')}>
@@ -732,33 +848,77 @@ function OptionsTable({ trades, calcs, onEdit, onDelete }: {
             </span>
           )}
         </td>
-        <td className="px-4 py-2.5 text-gray-600">{t.expiration_date ?? '—'}</td>
+        <td className="px-4 py-2.5 text-right tabular-nums">{t.strike != null ? fmtNum(t.strike, 2) : '—'}</td>
+        <td className="px-4 py-2.5 text-gray-600">
+          {t.expiration_date ?? '—'}
+          {daysLeft != null && (
+            <span className={cn('block', daysLeft <= 7 ? 'text-amber-600 font-medium' : 'text-gray-400')}>
+              {daysLeft < 0 ? `venceu há ${-daysLeft}d` : daysLeft === 0 ? 'vence hoje' : `${daysLeft}d`}
+            </span>
+          )}
+        </td>
         <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.quantity, 0)}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.entry_price, 4)}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums">{t.exit_price != null ? fmtNum(t.exit_price, 4) : '—'}</td>
+        <td className="px-4 py-2.5 text-right tabular-nums">{t.premium != null ? fmtNum(t.premium, 4) : '—'}</td>
+        <td className="px-4 py-2.5 text-right tabular-nums">
+          {t.option_status === 'exercised' && t.underlying_price_at_exercise != null
+            ? <span title="Preço da ação no exercício">Ação {fmtNum(t.underlying_price_at_exercise, 2)}</span>
+            : t.exit_price != null ? fmtNum(t.exit_price, 4) : '—'}
+        </td>
         <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.fees, 2)}</td>
         <td className={cn('px-4 py-2.5 text-right tabular-nums font-semibold', c?.resultado != null ? (pos ? 'text-emerald-600' : 'text-red-600') : 'text-gray-400')}>
           {c?.resultado != null ? (pos ? '+' : '') + formatCurrency(c.resultado) : 'Em aberto'}
+          {c?.resultKind === 'unrealized' && (
+            <span className="block font-normal text-gray-400">
+              não realizado{t.current_premium_updated_at && ` · atualizado em ${fmtDayMonth(t.current_premium_updated_at)}`}
+            </span>
+          )}
         </td>
         <td className={cn('px-4 py-2.5 text-right tabular-nums font-semibold', c?.rentPct != null ? (pos ? 'text-emerald-600' : 'text-red-600') : 'text-gray-400')}>
           {c?.rentPct != null ? fmtPct(c.rentPct) : '—'}
+          {c?.rentPct != null && c.rentLabel && <span className="block font-normal text-gray-400">{c.rentLabel}</span>}
         </td>
-        <td className="px-4 py-2.5 text-right"><RowActions onEdit={() => onEdit(t)} onDelete={() => onDelete(t.id)} /></td>
+        <td className="px-4 py-2.5 text-right">
+          <div className="flex items-center gap-1 justify-end">
+            {isOpen && (
+              <>
+                <button
+                  onClick={() => onUpdatePremium(t)}
+                  title="Atualizar prêmio atual"
+                  aria-label="Atualizar prêmio atual"
+                  className="p-1 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
+                >
+                  <RefreshCw className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => onCloseOption(t)}
+                  title="Encerrar operação"
+                  aria-label="Encerrar operação"
+                  className="p-1 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-colors"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+            <RowActions onEdit={() => onEdit(t)} onDelete={() => onDelete(t.id)} />
+          </div>
+        </td>
       </tr>
     )
   }
 
   return (
     <div className="overflow-x-auto">
-      <table className="w-full text-xs min-w-[900px]">
+      <table className="w-full text-xs min-w-[1100px]">
         <thead>
           <tr className="border-b border-gray-50 text-gray-400 font-medium">
             <th className="px-4 py-3 text-left">Status</th>
             <th className="px-4 py-3 text-left">Ativo obj.</th>
             <th className="px-4 py-3 text-left">Série</th>
+            <th className="px-4 py-3 text-left">Posição</th>
             <th className="px-4 py-3 text-left">Tipo</th>
+            <th className="px-4 py-3 text-right">Strike</th>
             <th className="px-4 py-3 text-left">Vencimento</th>
-            <th className="px-4 py-3 text-right">Contratos</th>
+            <th className="px-4 py-3 text-right">Qtd</th>
             <th className="px-4 py-3 text-right">Prêmio</th>
             <th className="px-4 py-3 text-right">P. saída</th>
             <th className="px-4 py-3 text-right">Taxas</th>
@@ -810,7 +970,12 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
   onSubmit: () => void
   onClose: () => void
 }) {
-  const isClosed = formTab === 'swing' ? form.status === 'closed' : form.option_status !== 'open'
+  const isClosed = form.status === 'closed'
+  const lotWarnings = validateOption({
+    quantity: parseNum(form.quantity),
+    strike: parseNum(form.strike),
+    premium: parseNum(form.premium),
+  }).warnings
 
   return (
     <div className="w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
@@ -877,6 +1042,13 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
           </>
         ) : (
           <>
+            <FormRow label="Posição">
+              <ToggleGroup
+                value={form.position}
+                options={[{ value: 'holder', label: 'Comprei (titular)' }, { value: 'writer', label: 'Vendi (lançador)' }]}
+                onChange={(v) => setF('position', v)}
+              />
+            </FormRow>
             <div className="grid grid-cols-2 gap-3">
               <FormRow label="Ativo objeto *">
                 <input type="text" value={form.ticker} placeholder="PETR4" onChange={(e) => setF('ticker', e.target.value.toUpperCase())} className={inputCls} />
@@ -893,51 +1065,33 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
                   onChange={(v) => setF('option_type', v)}
                 />
               </FormRow>
-              <FormRow label="Vencimento">
+              <FormRow label="Vencimento *">
                 <input type="date" value={form.expiration_date} onChange={(e) => setF('expiration_date', e.target.value)} className={inputCls} />
               </FormRow>
             </div>
-            <FormRow label="Data entrada *">
-              <input type="date" value={form.entry_date} onChange={(e) => setF('entry_date', e.target.value)} className={inputCls} />
+            <div className="grid grid-cols-2 gap-3">
+              <FormRow label="Data entrada *">
+                <input type="date" value={form.entry_date} onChange={(e) => setF('entry_date', e.target.value)} className={inputCls} />
+              </FormRow>
+              <FormRow label="Strike (R$) *">
+                <input type="text" inputMode="decimal" value={form.strike} onChange={(e) => setF('strike', e.target.value)} className={inputCls} placeholder="0,00" />
+              </FormRow>
+            </div>
+            <div className="grid grid-cols-2 gap-3 items-start">
+              <FormRow label="Quantidade de opções *">
+                <input type="text" inputMode="decimal" value={form.quantity} onChange={(e) => setF('quantity', e.target.value)} className={inputCls} placeholder="1.000" />
+                {lotWarnings.map((w) => (
+                  <p key={w} className="mt-1 text-xs text-amber-600">{w}</p>
+                ))}
+              </FormRow>
+              <FormRow label="Prêmio por opção (R$) *">
+                <input type="text" inputMode="decimal" value={form.premium} onChange={(e) => setF('premium', e.target.value)} className={inputCls} placeholder="0,00" />
+                <p className="mt-1 text-xs text-gray-400">Preço unitário de execução, como aparece na nota da corretora</p>
+              </FormRow>
+            </div>
+            <FormRow label="Taxas">
+              <input type="text" inputMode="decimal" value={form.fees} onChange={(e) => setF('fees', e.target.value)} className={inputCls} />
             </FormRow>
-            <div className="grid grid-cols-2 gap-3">
-              <FormRow label="Nº contratos *">
-                <input type="text" inputMode="decimal" value={form.quantity} onChange={(e) => setF('quantity', e.target.value)} className={inputCls} placeholder="1" />
-              </FormRow>
-              <FormRow label="Prêmio / ação *">
-                <input type="text" inputMode="decimal" value={form.premium} onChange={(e) => setF('premium', e.target.value)} className={inputCls} placeholder="0,0000" />
-              </FormRow>
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <FormRow label="Taxas">
-                <input type="text" inputMode="decimal" value={form.fees} onChange={(e) => setF('fees', e.target.value)} className={inputCls} />
-              </FormRow>
-              <FormRow label="Status da opção">
-                <div className="relative">
-                  <select
-                    value={form.option_status}
-                    onChange={(e) => setF('option_status', e.target.value)}
-                    className={inputCls + ' appearance-none pr-7'}
-                  >
-                    <option value="open">Aberta</option>
-                    <option value="exercised">Exercida</option>
-                    <option value="closed">Encerrada manualmente</option>
-                    <option value="expired">Virou pó 💀</option>
-                  </select>
-                  <ChevronDown className="absolute right-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
-                </div>
-              </FormRow>
-            </div>
-            {isClosed && form.option_status !== 'expired' && (
-              <div className="grid grid-cols-2 gap-3">
-                <FormRow label="Data saída">
-                  <input type="date" value={form.exit_date} onChange={(e) => setF('exit_date', e.target.value)} className={inputCls} />
-                </FormRow>
-                <FormRow label="Preço saída">
-                  <input type="text" inputMode="decimal" value={form.exit_price} onChange={(e) => setF('exit_price', e.target.value)} className={inputCls} placeholder="0,0000" />
-                </FormRow>
-              </div>
-            )}
           </>
         )}
 
@@ -946,6 +1100,7 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
         </FormRow>
 
         {/* Preview */}
+        {formTab === 'options' ? <OptionFooter form={form} /> : (
         <div className="bg-gray-50 rounded-xl p-3 grid grid-cols-3 gap-2 text-xs">
           <div>
             <p className="text-gray-400 mb-0.5">Investido</p>
@@ -964,6 +1119,7 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
             </p>
           </div>
         </div>
+        )}
 
         <div className="flex gap-2 pt-1">
           <button
@@ -981,6 +1137,229 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
           </button>
         </div>
       </div>
+    </div>
+  )
+}
+
+// ─── Option form footer ───────────────────────────────────────────────────────
+
+function OptionFooter({ form }: { form: FormState }) {
+  const quantity = parseNum(form.quantity)
+  const premium = parseNum(form.premium)
+  const strike = form.strike ? parseNum(form.strike) : null
+  const c = computeOption({
+    optionType: form.option_type,
+    position: form.position,
+    quantity,
+    strike,
+    premium,
+    fees: parseNum(form.fees),
+    status: 'open',
+    exitPremium: null,
+    currentPremium: null,
+    underlyingPriceAtExercise: null,
+  })
+  const strikeLabel = strike != null ? formatCurrency(strike) : 'R$ —'
+  const qtyLabel = fmtNum(quantity, 0)
+
+  return (
+    <div className="space-y-2">
+      <div className="bg-gray-50 rounded-xl p-3 text-xs space-y-1.5">
+        {form.position === 'holder' ? (
+          <div className="grid grid-cols-3 gap-2">
+            <FooterValue label="Pago pelas opções" value={formatCurrency(c.paid ?? 0)} />
+            <FooterValue label="Perda máxima" value={formatCurrency(c.maxLoss ?? 0)} />
+            <FooterValue label="Break-even" value={c.breakEven != null ? fmtPremium(c.breakEven) : '—'} />
+          </div>
+        ) : (
+          <FooterValue label="Prêmio recebido" value={formatCurrency(c.received ?? 0)} />
+        )}
+        <p className="text-gray-500 tabular-nums">
+          {qtyLabel} × {fmtPremium(premium)} = {formatCurrency(c.premiumTotal)}
+        </p>
+      </div>
+      {form.position === 'writer' && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-xs font-medium text-amber-900">
+            {form.option_type === 'put'
+              ? `Se exercido, você é obrigado a COMPRAR ${qtyLabel} ações a ${strikeLabel} = ${formatCurrency(c.exposure ?? 0)}`
+              : `Se exercido, você é obrigado a ENTREGAR ${qtyLabel} ações a ${strikeLabel}`}
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FooterValue({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <p className="text-gray-400 mb-0.5">{label}</p>
+      <p className="font-semibold text-gray-700 tabular-nums">{value}</p>
+    </div>
+  )
+}
+
+// ─── Lifecycle forms ──────────────────────────────────────────────────────────
+
+function UpdatePremiumForm({ trade, isPending, onSubmit, onClose }: {
+  trade: TradeOperation
+  isPending: boolean
+  onSubmit: (value: number) => void
+  onClose: () => void
+}) {
+  const [value, setValue] = useState(trade.current_premium != null ? fmtNum(trade.current_premium, 4) : '')
+  const parsed = parseNum(value)
+  const c = value ? computeOption({ ...optionInputFromTrade(trade), currentPremium: parsed }) : null
+
+  return (
+    <div className="w-full max-w-sm p-6 space-y-3">
+      <ModalHeader title={`Atualizar prêmio atual — ${trade.option_series ?? trade.ticker}`} onClose={onClose} />
+      <FormRow label="Prêmio atual por opção (R$)">
+        <input type="text" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(e.target.value)} className={inputCls} placeholder="0,00" />
+      </FormRow>
+      {c?.result != null && <ResultPreview label="Resultado não realizado" result={c.result} />}
+      <ModalActions
+        confirmLabel="Salvar"
+        disabled={isPending || !value}
+        onConfirm={() => onSubmit(parsed)}
+        onClose={onClose}
+      />
+    </div>
+  )
+}
+
+type CloseOutcome = CloseOptionData['outcome']
+
+const CLOSE_OUTCOMES: { value: CloseOutcome; label: string }[] = [
+  { value: 'closed', label: 'Encerrei antes do vencimento' },
+  { value: 'exercised', label: 'Foi exercida' },
+  { value: 'expired', label: 'Virou pó' },
+]
+
+function CloseOptionForm({ trade, isPending, onSubmit, onClose }: {
+  trade: TradeOperation
+  isPending: boolean
+  onSubmit: (data: CloseOptionData) => void
+  onClose: () => void
+}) {
+  const todayBr = todayInBrazil()
+  const expiryOrToday = trade.expiration_date && trade.expiration_date < todayBr ? trade.expiration_date : todayBr
+  const [outcome, setOutcome] = useState<CloseOutcome>('closed')
+  const [exitPremium, setExitPremium] = useState('')
+  const [exitDate, setExitDate] = useState(todayBr)
+  const [underlyingPrice, setUnderlyingPrice] = useState('')
+
+  const input: OptionInput = {
+    ...optionInputFromTrade(trade),
+    status: outcome,
+    exitPremium: outcome === 'closed' && exitPremium ? parseNum(exitPremium) : null,
+    underlyingPriceAtExercise: outcome === 'exercised' && underlyingPrice ? parseNum(underlyingPrice) : null,
+  }
+  const c = computeOption(input)
+
+  function confirm() {
+    if (outcome === 'closed') onSubmit({ outcome, exit_premium: parseNum(exitPremium), exit_date: exitDate })
+    else if (outcome === 'exercised') onSubmit({ outcome, underlying_price: parseNum(underlyingPrice), exit_date: expiryOrToday })
+    else onSubmit({ outcome, exit_date: trade.expiration_date ?? todayBr })
+  }
+
+  return (
+    <div className="w-full max-w-md p-6 space-y-3">
+      <ModalHeader title={`Encerrar operação — ${trade.option_series ?? trade.ticker}`} onClose={onClose} />
+      <FormRow label="O que aconteceu?">
+        <div className="space-y-1">
+          {CLOSE_OUTCOMES.map((o) => (
+            <button
+              key={o.value} type="button"
+              onClick={() => setOutcome(o.value)}
+              className={cn(
+                'w-full text-left px-3 py-2 text-sm rounded-lg border transition-colors',
+                outcome === o.value
+                  ? 'border-emerald-500 bg-emerald-50 text-emerald-800 font-medium'
+                  : 'border-gray-200 text-gray-600 hover:bg-gray-50'
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      </FormRow>
+      {outcome === 'closed' && (
+        <div className="grid grid-cols-2 gap-3">
+          <FormRow label="Prêmio de saída (R$) *">
+            <input type="text" inputMode="decimal" value={exitPremium} onChange={(e) => setExitPremium(e.target.value)} className={inputCls} placeholder="0,00" />
+          </FormRow>
+          <FormRow label="Data *">
+            <input type="date" value={exitDate} onChange={(e) => setExitDate(e.target.value)} className={inputCls} />
+          </FormRow>
+        </div>
+      )}
+      {outcome === 'exercised' && (
+        <>
+          <FormRow label="Preço da ação no exercício (R$) *">
+            <input type="text" inputMode="decimal" value={underlyingPrice} onChange={(e) => setUnderlyingPrice(e.target.value)} className={inputCls} placeholder="0,00" />
+          </FormRow>
+          <p className="text-xs text-gray-500">
+            O exercício registra só o resultado da opção. A posição em ações deve ser lançada à parte.
+          </p>
+        </>
+      )}
+      {c.result != null && <ResultPreview label="Resultado calculado" result={c.result} />}
+      <ModalActions
+        confirmLabel="Confirmar encerramento"
+        disabled={isPending || c.result == null || (outcome === 'closed' && !exitDate)}
+        onConfirm={confirm}
+        onClose={onClose}
+      />
+    </div>
+  )
+}
+
+function ResultPreview({ label, result }: { label: string; result: number }) {
+  return (
+    <div className="bg-gray-50 rounded-xl p-3 text-xs">
+      <p className="text-gray-400 mb-0.5">{label}</p>
+      <p className={cn('text-sm font-semibold tabular-nums', result >= 0 ? 'text-emerald-600' : 'text-red-600')}>
+        {(result >= 0 ? '+' : '') + formatCurrency(result)}
+      </p>
+    </div>
+  )
+}
+
+function ModalHeader({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+      <button onClick={onClose} className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100 transition-colors">
+        <X className="w-4 h-4" />
+      </button>
+    </div>
+  )
+}
+
+function ModalActions({ confirmLabel, disabled, onConfirm, onClose }: {
+  confirmLabel: string
+  disabled: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <div className="flex gap-2 pt-1">
+      <button
+        onClick={onConfirm}
+        disabled={disabled}
+        className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
+      >
+        {confirmLabel}
+      </button>
+      <button
+        onClick={onClose}
+        className="px-4 py-2.5 text-gray-600 hover:bg-gray-100 text-sm font-medium rounded-xl transition-colors border border-gray-200"
+      >
+        Cancelar
+      </button>
     </div>
   )
 }

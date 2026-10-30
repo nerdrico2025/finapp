@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useEffect } from 'react'
+import Link from 'next/link'
 import { useRouter, useSearchParams } from 'next/navigation'
 import {
   Plus, Pencil, Trash2, X,
@@ -15,6 +16,7 @@ import {
   type BillAlertFormData,
   type UpcomingAlert,
 } from '@/lib/actions/billAlerts'
+import type { OptionExpiryNotice } from '@/lib/options/calc'
 import { toast } from 'sonner'
 import { BillAlertForm } from '@/components/forms/BillAlertForm'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -39,10 +41,11 @@ type Modal =
 interface Props {
   alerts: BillAlert[]
   upcoming: UpcomingAlert[]
+  optionNotices: OptionExpiryNotice[]
   googleConnected: boolean
 }
 
-export function AlertsClient({ alerts, upcoming, googleConnected }: Props) {
+export function AlertsClient({ alerts, upcoming, optionNotices, googleConnected }: Props) {
   const [modal, setModal] = useState<Modal>({ type: 'closed' })
   const [toggling, setToggling] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -136,6 +139,29 @@ export function AlertsClient({ alerts, upcoming, googleConnected }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Option expiry notices */}
+        {optionNotices.length > 0 && (
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
+            <CalendarClock className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <ul className="space-y-1">
+              {optionNotices.map((n) => (
+                <li key={n.id} className="text-sm text-amber-900">
+                  <Link href={`/investments?encerrar=${n.id}`} className="font-medium underline hover:text-amber-700">
+                    {n.message}
+                  </Link>
+                  <span className="text-amber-600 ml-1">
+                    {n.daysUntil < 0
+                      ? `— venceu em ${formatDate(n.expirationDate)}`
+                      : n.daysUntil === 0
+                      ? '— vence hoje'
+                      : `— vence em ${formatDate(n.expirationDate)}`}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Urgent banner */}
         {urgent.length > 0 && (

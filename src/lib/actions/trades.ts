@@ -3,11 +3,22 @@
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
-import type { TradeOperation } from '@/types'
+import { upsertOptionExpiryEvents, deleteCalendarEvent } from '@/lib/google/calendar'
+import {
+  getOptionExpiryNotices,
+  todayInBrazil,
+  validateOption,
+  type OptionExpiryNotice,
+} from '@/lib/options/calc'
+import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 export type TradeType = 'swing' | 'options'
 export type TradeStatus = 'open' | 'closed'
-export type OptionStatus = 'open' | 'exercised' | 'expired' | 'closed'
+
+export type CloseOptionData =
+  | { outcome: 'closed'; exit_premium: number; exit_date: string }
+  | { outcome: 'exercised'; underlying_price: number; exit_date: string }
+  | { outcome: 'expired'; exit_date: string }
 
 export interface TradeFormData {
   type: TradeType
@@ -29,6 +40,30 @@ export interface TradeFormData {
   expiration_date?: string | null
   premium?: number | null         // premium per share for options
   option_status?: OptionStatus | null
+  position?: OptionPosition
+  strike?: number | null
+}
+
+function optionValidationError(formData: Partial<TradeFormData>): string | null {
+  const { errors } = validateOption({
+    quantity: formData.quantity ?? 0,
+    strike: formData.strike ?? null,
+    premium: formData.premium ?? 0,
+  })
+  return errors[0]?.message ?? null
+}
+
+async function removeExpiryEvents(
+  userId: string,
+  eventIds: { google_event_id: string | null; google_reminder_event_id: string | null },
+) {
+  try {
+    await Promise.all(
+      [eventIds.google_event_id, eventIds.google_reminder_event_id]
+        .filter((id): id is string => !!id)
+        .map((id) => deleteCalendarEvent(userId, id)),
+    )
+  } catch { /* Google Calendar is optional */ }
 }
 
 export interface TradeFilters {
@@ -64,6 +99,11 @@ export async function getTrades(filters: TradeFilters = {}): Promise<TradeOperat
 export async function createTrade(
   formData: TradeFormData
 ): Promise<{ error: string | null; id?: string }> {
+  if (formData.type === 'options') {
+    const validationError = optionValidationError(formData)
+    if (validationError) return { error: validationError }
+  }
+
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
@@ -93,13 +133,30 @@ export async function createTrade(
       expiration_date: formData.expiration_date ?? null,
       premium: formData.premium ?? null,
       option_status: formData.option_status ?? null,
+      position: formData.position ?? 'holder',
+      strike: formData.strike ?? null,
     })
     .select('id')
     .single()
 
   if (error) return { error: error.message }
 
-  revalidatePath('/investments')
+  if (formData.type === 'options' && formData.expiration_date) {
+    try {
+      const { reminderEventId, dueEventId } = await upsertOptionExpiryEvents({
+        userId: user.id,
+        series: formData.option_series?.toUpperCase() || formData.ticker.toUpperCase(),
+        expirationDate: formData.expiration_date,
+        today: todayInBrazil(),
+      })
+      await supabase.from('trade_operations').update({
+        google_event_id: dueEventId,
+        google_reminder_event_id: reminderEventId,
+      }).eq('id', data.id)
+    } catch { /* Google Calendar is optional */ }
+  }
+
+  revalidatePath('/', 'layout')
   return { error: null, id: data.id }
 }
 
@@ -107,12 +164,17 @@ export async function updateTrade(
   id: string,
   formData: Partial<TradeFormData>
 ): Promise<{ error: string | null }> {
+  if (formData.type === 'options') {
+    const validationError = optionValidationError(formData)
+    if (validationError) return { error: validationError }
+  }
+
   const supabase = await createClient()
 
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
-  const { error } = await supabase
+  const { data: updated, error } = await supabase
     .from('trade_operations')
     .update({
       ...(formData.ticker !== undefined && { ticker: formData.ticker.toUpperCase() }),
@@ -131,14 +193,131 @@ export async function updateTrade(
       ...('expiration_date' in formData && { expiration_date: formData.expiration_date ?? null }),
       ...('premium' in formData && { premium: formData.premium ?? null }),
       ...('option_status' in formData && { option_status: formData.option_status ?? null }),
+      ...(formData.position !== undefined && { position: formData.position }),
+      ...('strike' in formData && { strike: formData.strike ?? null }),
     })
     .eq('id', id)
     .eq('user_id', user.id)
+    .select('type, ticker, option_series, option_status, expiration_date, google_event_id, google_reminder_event_id')
+    .maybeSingle()
 
   if (error) return { error: error.message }
 
-  revalidatePath('/investments')
+  if (updated?.type === 'options' && updated.option_status === 'open' && updated.expiration_date) {
+    try {
+      const { reminderEventId, dueEventId } = await upsertOptionExpiryEvents({
+        userId: user.id,
+        series: updated.option_series ?? updated.ticker,
+        expirationDate: updated.expiration_date,
+        today: todayInBrazil(),
+        existingReminderEventId: updated.google_reminder_event_id,
+        existingDueEventId: updated.google_event_id,
+      })
+      await supabase.from('trade_operations').update({
+        google_event_id: dueEventId,
+        google_reminder_event_id: reminderEventId,
+      }).eq('id', id)
+    } catch { /* Google Calendar is optional */ }
+  }
+
+  revalidatePath('/', 'layout')
   return { error: null }
+}
+
+export async function updateCurrentPremium(
+  id: string,
+  currentPremium: number,
+): Promise<{ error: string | null; updatedAt?: string }> {
+  if (!(currentPremium >= 0)) return { error: 'Informe o prêmio atual.' }
+
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado' }
+
+  const updatedAt = new Date().toISOString()
+  const { data, error } = await supabase
+    .from('trade_operations')
+    .update({ current_premium: currentPremium, current_premium_updated_at: updatedAt })
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .eq('type', 'options')
+    .eq('option_status', 'open')
+    .select('id')
+    .maybeSingle()
+
+  if (error) return { error: error.message }
+  if (!data) return { error: 'Operação não encontrada ou já encerrada.' }
+
+  revalidatePath('/investments')
+  return { error: null, updatedAt }
+}
+
+export async function closeOption(
+  id: string,
+  close: CloseOptionData,
+): Promise<{ error: string | null }> {
+  if (!close.exit_date) return { error: 'Informe a data de encerramento.' }
+  if (close.outcome === 'closed' && !(close.exit_premium >= 0)) return { error: 'Informe o prêmio de saída.' }
+  if (close.outcome === 'exercised' && !(close.underlying_price > 0)) return { error: 'Informe o preço da ação no exercício.' }
+
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { error: 'Não autenticado' }
+
+  const { data: events } = await supabase
+    .from('trade_operations')
+    .select('google_event_id, google_reminder_event_id')
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .maybeSingle()
+
+  const { data, error } = await supabase
+    .from('trade_operations')
+    .update({
+      status: 'closed',
+      option_status: close.outcome,
+      exit_date: close.exit_date,
+      exit_price: close.outcome === 'closed' ? close.exit_premium : null,
+      underlying_price_at_exercise: close.outcome === 'exercised' ? close.underlying_price : null,
+      google_event_id: null,
+      google_reminder_event_id: null,
+    })
+    .eq('id', id)
+    .eq('user_id', user.id)
+    .eq('type', 'options')
+    .eq('option_status', 'open')
+    .select('id')
+    .maybeSingle()
+
+  if (error) return { error: error.message }
+  if (!data) return { error: 'Operação não encontrada ou já encerrada.' }
+  if (events) await removeExpiryEvents(user.id, events)
+
+  revalidatePath('/', 'layout')
+  return { error: null }
+}
+
+export async function getExpiringOptions(): Promise<OptionExpiryNotice[]> {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
+    .from('trade_operations')
+    .select('id, ticker, option_series, option_status, expiration_date')
+    .eq('user_id', user.id)
+    .eq('type', 'options')
+    .eq('option_status', 'open')
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
+  return getOptionExpiryNotices(data ?? [], todayInBrazil())
 }
 
 export async function deleteTrade(id: string): Promise<{ error: string | null }> {
@@ -147,14 +326,17 @@ export async function deleteTrade(id: string): Promise<{ error: string | null }>
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
-  const { error } = await supabase
+  const { data: deleted, error } = await supabase
     .from('trade_operations')
     .delete()
     .eq('id', id)
     .eq('user_id', user.id)
+    .select('google_event_id, google_reminder_event_id')
+    .maybeSingle()
 
   if (error) return { error: error.message }
+  if (deleted) await removeExpiryEvents(user.id, deleted)
 
-  revalidatePath('/investments')
+  revalidatePath('/', 'layout')
   return { error: null }
 }
