@@ -3,7 +3,7 @@
 import { useState, useMemo, useTransition } from 'react'
 import {
   Plus, Pencil, Trash2, TrendingUp, TrendingDown, Minus,
-  X, AlertTriangle, RefreshCw, CheckCircle2,
+  X, AlertTriangle, RefreshCw, CheckCircle2, Info,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -19,7 +19,8 @@ import {
 } from '@/lib/options/calc'
 import type { VisibleTradeTypes } from '@/lib/options/visible-trade-types'
 import { buildTradesView, type PartialSummary } from '@/lib/options/partial-summary'
-import { describePartial } from '@/lib/options/period-summary'
+import { describePartial, hasWriterPartial, partialReturnPct } from '@/lib/options/period-summary'
+import { realizedLabel, summarizeRealized } from '@/lib/options/realized-summary'
 import {
   computeTarget, targetInputFromTrade, validateTarget,
   type TargetCalc, type TargetInput,
@@ -222,6 +223,9 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
     [trades, periodStart, periodEnd]
   )
 
+  const partialReturn = useMemo(() => partialReturnPct(trades), [trades])
+  const holdersOnlyReturn = useMemo(() => hasWriterPartial(trades), [trades])
+
   const swingTrades = useMemo(() => filtered.filter((t) => t.type === 'swing'), [filtered])
 
   const summaryTrades = useMemo(
@@ -235,31 +239,10 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
     return map
   }, [trades])
 
-  const { totalProfit, totalLoss, netResult, winRate, avgRent } = useMemo(() => {
-    let profit = 0, loss = 0, wins = 0, total = 0, rentSum = 0
-    for (const t of summaryTrades) {
-      const c = calcs.get(t.id)
-      if (c?.resultado != null && c.resultKind !== 'unrealized') {
-        total++
-        if (c.resultado > 0) { profit += c.resultado; wins++ }
-        else loss += c.resultado
-        if (c.rentPct != null) rentSum += c.rentPct
-      }
-    }
-    return {
-      totalProfit: profit,
-      totalLoss: loss,
-      netResult: profit + loss,
-      winRate: total > 0 ? (wins / total) * 100 : 0,
-      avgRent: total > 0 ? rentSum / total : null,
-    }
-  }, [summaryTrades, calcs])
-
-  const realizedSubtitle = activeTab !== 'options'
-    ? undefined
-    : visibleTradeTypes.swing
-      ? 'Resultado realizado · Swing Trade + Opções (encerradas)'
-      : 'Resultado realizado · Opções (encerradas)'
+  const { totalProfit, totalLoss, netResult, winRate, avgRent } = useMemo(
+    () => summarizeRealized(summaryTrades.flatMap((t) => calcs.get(t.id) ?? [])),
+    [summaryTrades, calcs]
+  )
 
   function openNew(tab: TradeTab) {
     setFormTab(tab)
@@ -509,30 +492,27 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
       </div>
 
       {/* Summary cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <SummaryCard label="Lucro total" subtitle={realizedSubtitle} value={formatCurrency(totalProfit)} color="text-emerald-600" bg="bg-emerald-50" />
-        <SummaryCard label="Prejuízo total" subtitle={realizedSubtitle} value={totalLoss < 0 ? `-${formatCurrency(Math.abs(totalLoss))}` : formatCurrency(0)} color="text-red-600" bg="bg-red-50" />
-        <SummaryCard
-          label="Resultado líquido"
-          subtitle={realizedSubtitle}
-          value={formatCurrency(netResult)}
-          color={netResult >= 0 ? 'text-emerald-600' : 'text-red-600'}
-          bg={netResult >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
-        />
-        <SummaryCard
-          label="Rentab. média"
-          subtitle={realizedSubtitle}
-          value={avgRent != null ? fmtPct(avgRent) : '—'}
-          color={avgRent == null ? 'text-gray-400' : avgRent >= 0 ? 'text-emerald-600' : 'text-red-600'}
-          bg={avgRent == null ? 'bg-gray-50' : avgRent >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
-        />
-        <SummaryCard
-          label="Taxa de acerto"
-          subtitle={realizedSubtitle}
-          value={fmtNum(winRate, 1) + '%'}
-          color="text-blue-600"
-          bg="bg-blue-50"
-        />
+      <div className="space-y-2">
+        <p className="text-xs font-medium text-gray-500">{realizedLabel(visibleTradeTypes)}</p>
+        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3">
+          <SummaryCard label="Lucro total" value={formatCurrency(totalProfit)} color="text-emerald-600" />
+          <SummaryCard label="Prejuízo total" value={totalLoss < 0 ? `-${formatCurrency(Math.abs(totalLoss))}` : formatCurrency(0)} color="text-red-600" />
+          <SummaryCard
+            label="Resultado líquido"
+            value={formatCurrency(netResult)}
+            color={netResult >= 0 ? 'text-emerald-600' : 'text-red-600'}
+          />
+          <SummaryCard
+            label="Rentab. média"
+            value={avgRent != null ? fmtPct(avgRent) : '—'}
+            color={avgRent == null ? 'text-gray-400' : avgRent >= 0 ? 'text-emerald-600' : 'text-red-600'}
+          />
+          <SummaryCard
+            label="Taxa de acerto"
+            value={winRate != null ? fmtNum(winRate, 1) + '%' : '—'}
+            color={winRate != null ? 'text-blue-600' : 'text-gray-400'}
+          />
+        </div>
       </div>
 
       {/* Inner tab: Swing | Opções */}
@@ -600,7 +580,7 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
             </div>
           ) : (
             <>
-              <OptionsTotals partial={partial} capitalTrades={capitalTrades} openExposure={openExposure} />
+              <OptionsTotals partial={partial} partialReturn={partialReturn} holdersOnlyReturn={holdersOnlyReturn} capitalTrades={capitalTrades} openExposure={openExposure} />
               <OptionsTable
                 trades={optionsList}
                 outOfPeriodOpenIds={outOfPeriodOpenIds}
@@ -818,16 +798,35 @@ function SwingTable({ trades, calcs, onEdit, onDelete }: {
 
 // ─── Options Table ─────────────────────────────────────────────────────────────
 
-function PartialResultCard({ partial: p }: { partial: PartialSummary }) {
+const TOOLTIP_CLS = 'hidden group-hover:block group-focus-within:block absolute z-20 left-2 right-2 rounded-lg bg-gray-900 px-2.5 py-1.5 text-xs font-normal text-white shadow-lg'
+
+function PartialResultCard({ partial: p, returnPct, holdersOnlyReturn }: {
+  partial: PartialSummary
+  returnPct: number | null
+  holdersOnlyReturn: boolean
+}) {
   const hasResult = p.includedCount > 0
   const { details, warning } = describePartial(p)
+  const signColor = !hasResult ? 'text-gray-400' : p.result >= 0 ? 'text-emerald-600' : 'text-red-600'
 
   return (
     <TotalCard
       label="Resultado parcial"
-      support="operações abertas · não realizado"
+      hint="Todas as abertas com prêmio atualizado, sem filtro de período"
       value={hasResult ? (p.result >= 0 ? '+' : '') + formatCurrency(p.result) : '—'}
-      valueColor={!hasResult ? 'text-gray-400' : p.result >= 0 ? 'text-emerald-600' : 'text-red-600'}
+      valueColor={signColor}
+      valueSuffix={hasResult && returnPct != null && (
+        <span className="group">
+          <span tabIndex={holdersOnlyReturn ? 0 : undefined} className={cn('text-xl font-semibold tabular-nums focus:outline-none', returnColor(returnPct))}>
+            {fmtPct(returnPct)}
+          </span>
+          {holdersOnlyReturn && (
+            <span role="tooltip" className={cn(TOOLTIP_CLS, 'top-16')}>
+              Percentual sobre o capital pago, considerando só os titulares
+            </span>
+          )}
+        </span>
+      )}
     >
       {details && <p className="mt-1 text-xs text-gray-500">{details}</p>}
       {warning && <p className="mt-1 text-xs font-medium text-amber-600">{warning}</p>}
@@ -835,38 +834,61 @@ function PartialResultCard({ partial: p }: { partial: PartialSummary }) {
   )
 }
 
-function TotalCard({ label, support, value, valueColor = 'text-gray-900', attention = false, children }: {
+function TotalCard({ label, hint, value, valueColor = 'text-gray-900', valueSuffix, attention = false, children }: {
   label: string
-  support: string
+  hint: string
   value: string
   valueColor?: string
+  valueSuffix?: React.ReactNode
   attention?: boolean
   children?: React.ReactNode
 }) {
   return (
-    <div className={cn('bg-white rounded-2xl border px-4 py-3', attention ? 'border-amber-300' : 'border-gray-100')}>
-      <p className="text-xs text-gray-500 font-medium">{label}</p>
-      <p className={cn('mt-1 text-lg font-semibold tabular-nums leading-tight', valueColor)}>{value}</p>
-      <p className="mt-1 text-xs text-gray-400">{support}</p>
+    <div className={cn('relative bg-white rounded-2xl border px-4 py-3', attention ? 'border-amber-300' : 'border-gray-100')}>
+      {/* Altura reservada: mesmo com rótulo em duas linhas, os valores ficam alinhados. */}
+      <div className="flex items-start gap-1 min-h-[2rem]">
+        <p className="text-xs leading-4 text-gray-500 font-medium">{label}</p>
+        <span className="group shrink-0">
+          <button type="button" aria-label={hint} className="block text-gray-400 hover:text-gray-600 focus:text-gray-600 focus:outline-none">
+            <Info className="w-3.5 h-3.5 mt-px" />
+          </button>
+          <span
+            role="tooltip"
+            className={cn(TOOLTIP_CLS, 'top-9')}
+          >
+            {hint}
+          </span>
+        </span>
+      </div>
+      <div className="mt-1 flex flex-wrap items-baseline gap-x-2">
+        <p className={cn('text-2xl font-semibold tabular-nums leading-tight', valueColor)}>{value}</p>
+        {valueSuffix}
+      </div>
       {children}
     </div>
   )
 }
 
-function OptionsTotals({ partial, capitalTrades, openExposure }: {
+function returnColor(pct: number) {
+  return pct >= 0 ? 'text-emerald-600' : 'text-red-600'
+}
+
+function OptionsTotals({ partial, partialReturn, holdersOnlyReturn, capitalTrades, openExposure }: {
   partial: PartialSummary
+  partialReturn: number | null
+  holdersOnlyReturn: boolean
   capitalTrades: TradeOperation[]
   openExposure: number
 }) {
   const s = useMemo(() => summarizeOptions(capitalTrades.map(optionInputFromTrade)), [capitalTrades])
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 px-5 py-4 border-b border-gray-50">
-      <PartialResultCard partial={partial} />
-      <TotalCard label="Capital pago (titular)" support="titulares, no período" value={formatCurrency(s.paid)} />
-      <TotalCard label="Prêmio recebido (lançador)" support="lançadores, no período" value={formatCurrency(s.received)} />
+      <PartialResultCard partial={partial} returnPct={partialReturn} holdersOnlyReturn={holdersOnlyReturn} />
+      <TotalCard label="Capital pago (titular)" hint="Titulares, entradas dentro do período" value={formatCurrency(s.paid)} />
+      <TotalCard label="Prêmio recebido (lançador)" hint="Lançadores, entradas dentro do período" value={formatCurrency(s.received)} />
       <TotalCard
-        label="Exposição em aberto (puts lançadas)"
-        support="todas as abertas, sem filtro de período"
+        label="Exposição (puts lançadas)"
+        hint="Todas as puts lançadas abertas, sem filtro de período"
         value={formatCurrency(openExposure)}
         valueColor={openExposure > 0 ? 'text-amber-600' : 'text-gray-900'}
         attention={openExposure > 0}
@@ -874,6 +896,9 @@ function OptionsTotals({ partial, capitalTrades, openExposure }: {
     </div>
   )
 }
+
+// Mantém as ações visíveis ao rolar a tabela na horizontal.
+const STICKY_ACTIONS = 'sticky right-0 z-10 bg-white shadow-[-6px_0_6px_-6px_rgba(0,0,0,0.15)]'
 
 function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onUpdatePremium, onCloseOption }: {
   trades: TradeOperation[]
@@ -905,7 +930,7 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
     const daysLeft = isOpen && t.expiration_date ? daysBetween(todayBr, t.expiration_date) : null
     return (
       <>
-      <tr className="border-t border-gray-50 hover:bg-gray-50">
+      <tr className="group border-t border-gray-50 hover:bg-gray-50">
         <td className="px-4 py-2.5">
           {isExpired
             ? <span className="text-xs font-semibold text-red-600">💀 Virou pó</span>
@@ -935,12 +960,12 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
         </td>
         <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.quantity, 0)}</td>
         <td className="px-4 py-2.5 text-right tabular-nums">{t.premium != null ? fmtNum(t.premium, 4) : '—'}</td>
-        <td className="px-4 py-2.5 text-right tabular-nums">
+        <td className="px-2 py-2.5 text-right tabular-nums">
           {t.option_status === 'exercised' && t.underlying_price_at_exercise != null
             ? <span title="Preço da ação no exercício">Ação {fmtNum(t.underlying_price_at_exercise, 2)}</span>
             : t.exit_price != null ? fmtNum(t.exit_price, 4) : '—'}
         </td>
-        <td className="px-4 py-2.5 text-right tabular-nums">{fmtNum(t.fees, 2)}</td>
+        <td className="px-2 py-2.5 text-right tabular-nums">{fmtNum(t.fees, 2)}</td>
         <td className={cn('px-4 py-2.5 text-right tabular-nums font-semibold', c?.resultado != null ? (pos ? 'text-emerald-600' : 'text-red-600') : 'text-gray-400')}>
           {c?.resultado != null ? (pos ? '+' : '') + formatCurrency(c.resultado) : 'Em aberto'}
           {c?.resultKind === 'unrealized' && (
@@ -953,7 +978,7 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
           {c?.rentPct != null ? fmtPct(c.rentPct) : '—'}
           {c?.rentPct != null && c.rentLabel && <span className="block font-normal text-gray-400">{c.rentLabel}</span>}
         </td>
-        <td className="px-4 py-2.5 text-right">
+        <td className={cn('px-4 py-2.5 text-right group-hover:bg-gray-50', STICKY_ACTIONS)}>
           <div className="flex items-center gap-1 justify-end">
             {isOpen && (
               <>
@@ -1008,11 +1033,11 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
             <th className="px-4 py-3 text-left">Vencimento</th>
             <th className="px-4 py-3 text-right">Qtd</th>
             <th className="px-4 py-3 text-right">Prêmio</th>
-            <th className="px-4 py-3 text-right">P. saída</th>
-            <th className="px-4 py-3 text-right">Taxas</th>
+            <th className="px-2 py-3 text-right">P. saída</th>
+            <th className="px-2 py-3 text-right">Taxas</th>
             <th className="px-4 py-3 text-right">Resultado</th>
             <th className="px-4 py-3 text-right">Rent%</th>
-            <th className="px-4 py-3 text-right">Ações</th>
+            <th className={cn('px-4 py-3 text-right', STICKY_ACTIONS)}>Ações</th>
           </tr>
         </thead>
         <tbody>
@@ -1628,14 +1653,11 @@ function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => 
   )
 }
 
-function SummaryCard({ label, subtitle, value, color, bg }: { label: string; subtitle?: string; value: string; color: string; bg: string }) {
+function SummaryCard({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 px-4 py-3">
       <p className="text-xs text-gray-500 font-medium mb-1">{label}</p>
-      {subtitle && <p className="text-[11px] leading-tight text-gray-400 mb-1">{subtitle}</p>}
-      <div className={cn('inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full', bg)}>
-        <p className={cn('text-sm font-bold tabular-nums', color)}>{value}</p>
-      </div>
+      <p className={cn('text-2xl font-semibold tabular-nums leading-tight', color)}>{value}</p>
     </div>
   )
 }
