@@ -538,7 +538,14 @@ export interface Database {
           option_type: 'call' | 'put' | null
           expiration_date: string | null
           premium: number | null
-          option_status: 'open' | 'exercised' | 'expired' | 'closed' | null
+          option_status: OptionStatus | null
+          position: OptionPosition
+          strike: number | null
+          underlying_price_at_exercise: number | null
+          current_premium: number | null
+          current_premium_updated_at: string | null
+          google_event_id: string | null
+          google_reminder_event_id: string | null
           created_at: string
           updated_at: string
         }
@@ -562,7 +569,14 @@ export interface Database {
           option_type?: 'call' | 'put' | null
           expiration_date?: string | null
           premium?: number | null
-          option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
+          option_status?: OptionStatus | null
+          position?: OptionPosition
+          strike?: number | null
+          underlying_price_at_exercise?: number | null
+          current_premium?: number | null
+          current_premium_updated_at?: string | null
+          google_event_id?: string | null
+          google_reminder_event_id?: string | null
           created_at?: string
           updated_at?: string
         }
@@ -584,7 +598,14 @@ export interface Database {
           option_type?: 'call' | 'put' | null
           expiration_date?: string | null
           premium?: number | null
-          option_status?: 'open' | 'exercised' | 'expired' | 'closed' | null
+          option_status?: OptionStatus | null
+          position?: OptionPosition
+          strike?: number | null
+          underlying_price_at_exercise?: number | null
+          current_premium?: number | null
+          current_premium_updated_at?: string | null
+          google_event_id?: string | null
+          google_reminder_event_id?: string | null
           updated_at?: string
         }
         Relationships: never[]
@@ -642,6 +663,8 @@ export type Budget = Tables['budgets']['Row']
 export type Goal = Tables['goals']['Row']
 export type Entity = Tables['entities']['Row']
 export type EntityMember = Tables['entity_members']['Row']
+export type OptionPosition = 'holder' | 'writer'
+export type OptionStatus = 'open' | 'closed' | 'exercised' | 'expired'
 export type TradeOperation = Tables['trade_operations']['Row']
 
 // ─── Entity type aliases ───────────────────────────────────────────────────────

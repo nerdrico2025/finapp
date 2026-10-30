@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { AppShell } from '@/components/layout/AppShell'
 import { EntityProvider } from '@/contexts/EntityContext'
 import { getUpcomingAlerts } from '@/lib/actions/billAlerts'
+import { getExpiringOptions } from '@/lib/actions/trades'
 import type { Profile } from '@/types'
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -10,9 +11,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) redirect('/login')
 
-  const [{ data: rawProfile }, { data: upcomingAlerts }] = await Promise.all([
+  const [{ data: rawProfile }, { data: upcomingAlerts }, expiringOptions] = await Promise.all([
     supabase.from('profiles').select('*').eq('id', user.id).single(),
     getUpcomingAlerts(3),
+    getExpiringOptions(),
   ])
 
   const profile = rawProfile
@@ -25,7 +27,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     <EntityProvider>
       <AppShell
         profile={profile as Profile | null}
-        alertCount={upcomingAlerts.length}
+        alertCount={upcomingAlerts.length + expiringOptions.length}
         isAdmin={isAdmin}
       >
         {children}
