@@ -242,6 +242,19 @@ describe('getOptionTargetNotices', () => {
     expect(text(n!.message)).toBe('S1: prêmio atual R$ 0,10, stop de R$ 0,10 atingido')
   })
 
+  it('prêmio desatualizado acrescenta o aviso ao texto', () => {
+    const stale = { current_premium_updated_at: '2026-10-25T15:00:00Z' }
+    const [alvo] = getOptionTargetNotices([trade('1', { current_premium: 2.1, ...stale })], today)
+    expect(text(alvo!.message)).toBe('S1: prêmio atual R$ 2,10, 81% do caminho até o alvo R$ 2,50 · prêmio atualizado há 5 dias')
+    const [stop] = getOptionTargetNotices([trade('2', { current_premium: 0.1, ...stale })], today)
+    expect(text(stop!.message)).toBe('S2: prêmio atual R$ 0,10, stop de R$ 0,10 atingido · prêmio atualizado há 5 dias')
+  })
+
+  it('prêmio com 3 dias não acrescenta o aviso', () => {
+    const [n] = getOptionTargetNotices([trade('1', { current_premium: 2.1, current_premium_updated_at: '2026-10-27T15:00:00Z' })], today)
+    expect(n!.message).not.toContain('prêmio atualizado há')
+  })
+
   it('trunca o percentual: 99,5% não vira 100%', () => {
     const [n] = getOptionTargetNotices([trade('1', { current_premium: 2.49 })], today)
     expect(n!.status).toBe('near')

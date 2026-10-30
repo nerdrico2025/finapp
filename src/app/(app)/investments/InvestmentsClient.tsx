@@ -17,6 +17,7 @@ import { CategoryDonutChart } from '@/components/charts/CategoryDonutChart'
 import { cn } from '@/lib/utils/cn'
 import { updateInvestmentBalance } from '@/lib/actions/investments'
 import { TradeOperations } from './TradeOperations'
+import type { VisibleTradeTypes } from '@/lib/options/visible-trade-types'
 import { UpgradeGate } from '@/components/ui/UpgradeGate'
 import type { Account, Category, TradeOperation } from '@/types'
 import type { InvestmentData, HistoryPoint } from '@/lib/actions/investments'
@@ -27,6 +28,7 @@ interface Props {
   categories: Category[]
   history: { points: HistoryPoint[]; accountIds: string[] }
   initialTrades: TradeOperation[]
+  visibleTradeTypes: VisibleTradeTypes
   closeOptionId?: string
   openOptionsTab?: boolean
 }
@@ -65,7 +67,7 @@ function calcResults(pv: number, pmt: number, r: number) {
   })
 }
 
-export function InvestmentsClient({ investmentData, allAccounts, categories, history, initialTrades, closeOptionId, openOptionsTab }: Props) {
+export function InvestmentsClient({ investmentData, allAccounts, categories, history, initialTrades, visibleTradeTypes, closeOptionId, openOptionsTab }: Props) {
   const router = useRouter()
   const [importOpen, setImportOpen] = useState(false)
   const [activeTab, setActiveTab] = useState<Tab>(closeOptionId || openOptionsTab ? 'trades' : 'portfolio')
@@ -450,7 +452,7 @@ export function InvestmentsClient({ investmentData, allAccounts, categories, his
       )}
 
       {/* Trades Tab */}
-      {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} closeOptionId={closeOptionId} openOptionsTab={openOptionsTab} />}
+      {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} visibleTradeTypes={visibleTradeTypes} closeOptionId={closeOptionId} openOptionsTab={openOptionsTab} />}
 
       {/* Simulator Tab */}
       {activeTab === 'simulator' && (

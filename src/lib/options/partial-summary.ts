@@ -31,19 +31,29 @@ export function summarizePartial(trades: TradeOperation[]): PartialSummary {
   return summary
 }
 
+/** Encerradas contam pela saída; abertas, pela entrada. */
+export function optionPeriodDate(t: TradeOperation): string {
+  return t.option_status === 'open' ? t.entry_date : t.exit_date ?? t.entry_date
+}
+
 /**
- * O período filtra os cards realizados, as encerradas da lista, o capital pago
- * e o prêmio recebido. Parcial, exposição e abertas da lista ignoram o período,
- * porque uma posição aberta continua em risco seja qual for a entrada.
+ * Lista e cards realizados: opções encerradas pela data de saída, abertas e
+ * swing pela entrada. Capital pago e prêmio recebido são desembolso e
+ * recebimento na entrada, então seguem sempre a data de entrada. Parcial,
+ * exposição e abertas da lista ignoram o período, porque uma posição aberta
+ * continua em risco seja qual for a entrada.
  */
 export function buildTradesView(trades: TradeOperation[], periodStart: string, periodEnd: string) {
+  const inRange = (date: string) =>
+    !periodStart || !periodEnd || (date >= periodStart && date <= periodEnd)
   const inPeriod = (t: TradeOperation) =>
-    !periodStart || !periodEnd || (t.entry_date >= periodStart && t.entry_date <= periodEnd)
+    inRange(t.type === 'options' ? optionPeriodDate(t) : t.entry_date)
   const isOpenOption = (t: TradeOperation) => t.type === 'options' && t.option_status === 'open'
   const openOptions = trades.filter(isOpenOption)
 
   return {
     periodTrades: trades.filter(inPeriod),
+    capitalTrades: trades.filter((t) => t.type === 'options' && inRange(t.entry_date)),
     partial: summarizePartial(trades),
     openExposure: summarizeOptions(openOptions.map(optionInputFromTrade)).openExposure,
     optionsList: trades.filter((t) => t.type === 'options' && (inPeriod(t) || isOpenOption(t))),

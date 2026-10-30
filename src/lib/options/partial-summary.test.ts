@@ -134,16 +134,48 @@ describe('buildTradesView', () => {
     expect(buildTradesView([dated('2026-06-01', { type: 'swing', option_status: null })], start, end).optionsList).toEqual([])
   })
 
-  it('capital pago e prêmio recebido seguem o período, mesmo com aberta fora dele', () => {
-    const { periodTrades } = buildTradesView([
+  it('capital pago e prêmio recebido seguem a data de entrada, mesmo com aberta fora do período', () => {
+    const { capitalTrades } = buildTradesView([
       dated('2025-11-15'),
       dated('2025-11-16', { position: 'writer' }),
       dated('2026-06-01'),
       dated('2026-06-02', { position: 'writer' }),
     ], start, end)
-    const s = summarizeOptions(periodTrades.map(optionInputFromTrade))
+    const s = summarizeOptions(capitalTrades.map(optionInputFromTrade))
     expect(s.paid).toBeCloseTo(320)
     expect(s.received).toBeCloseTo(320)
+  })
+
+  it('encerrar depois não muda o capital do mês de entrada', () => {
+    const entradaNoPeriodo = dated('2026-06-01', { option_status: 'closed', exit_price: 1, exit_date: '2027-01-15' })
+    const { capitalTrades, periodTrades } = buildTradesView([entradaNoPeriodo], start, end)
+    expect(capitalTrades).toHaveLength(1)
+    expect(periodTrades).toEqual([])
+  })
+
+  it('opção aberta em outubro e encerrada em janeiro aparece em janeiro e não em outubro', () => {
+    const op = dated('2026-10-10', { option_status: 'closed', exit_price: 1, exit_date: '2027-01-15' })
+    const janeiro = buildTradesView([op], '2027-01-01', '2027-01-31')
+    expect(janeiro.optionsList).toHaveLength(1)
+    expect(janeiro.periodTrades).toHaveLength(1)
+    const outubro = buildTradesView([op], '2026-10-01', '2026-10-31')
+    expect(outubro.optionsList).toEqual([])
+    expect(outubro.periodTrades).toEqual([])
+  })
+
+  it('exercida e virou pó também seguem a data de saída', () => {
+    const ops = [
+      dated('2026-10-10', { option_status: 'exercised', underlying_price_at_exercise: 32, exit_date: '2027-01-15' }),
+      dated('2026-10-11', { option_status: 'expired', exit_date: '2027-01-16' }),
+    ]
+    expect(buildTradesView(ops, '2027-01-01', '2027-01-31').optionsList).toHaveLength(2)
+    expect(buildTradesView(ops, '2026-10-01', '2026-10-31').optionsList).toEqual([])
+  })
+
+  it('swing encerrado continua filtrado pela entrada', () => {
+    const swing = dated('2026-10-10', { type: 'swing', option_status: null, status: 'closed', exit_date: '2027-01-15' })
+    expect(buildTradesView([swing], '2026-10-01', '2026-10-31').periodTrades).toHaveLength(1)
+    expect(buildTradesView([swing], '2027-01-01', '2027-01-31').periodTrades).toEqual([])
   })
 
   it('período personalizado sem datas mantém todas as operações', () => {
