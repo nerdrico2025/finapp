@@ -1,4 +1,4 @@
-import { summarizeOptions, optionInputFromTrade } from './calc'
+import { computeOption, summarizeOptions, optionInputFromTrade } from './calc'
 import { optionPeriodDate, summarizePartial, type PartialSummary } from './partial-summary'
 import type { TradeOperation } from '@/types'
 
@@ -37,6 +37,27 @@ export function summarizeOptionsPeriod(
   }
 }
 
+/**
+ * Rentabilidade do parcial só dos titulares abertos com prêmio atual: lançador
+ * não tem capital pago, então seu resultado distorceria o percentual. Nulo sem
+ * capital.
+ */
+export function partialReturnPct(trades: TradeOperation[]): number | null {
+  const holders = trades.filter((t) => t.position === 'holder')
+  const { result } = summarizePartial(holders)
+  let capital = 0
+  for (const t of holders) {
+    if (t.option_status !== 'open') continue
+    const c = computeOption(optionInputFromTrade(t))
+    if (c.resultKind === 'unrealized') capital += c.paid ?? 0
+  }
+  return capital > 0 ? (result / capital) * 100 : null
+}
+
+export function hasWriterPartial(trades: TradeOperation[]): boolean {
+  return summarizePartial(trades.filter((t) => t.position === 'writer')).includedCount > 0
+}
+
 export function monthRange(month: number, year: number): { start: string; end: string } {
   const mm = String(month).padStart(2, '0')
   const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
@@ -47,16 +68,16 @@ export function monthRange(month: number, year: number): { start: string; end: s
 export function describePartial(p: PartialSummary): { details: string | null; warning: string | null } {
   const parts: string[] = []
   if (p.includedCount > 0) {
-    parts.push(`${p.includedCount} ${p.includedCount === 1 ? 'operação aberta incluída' : 'operações abertas incluídas'}`)
+    parts.push(`${p.includedCount} ${p.includedCount === 1 ? 'aberta' : 'abertas'}`)
     if (p.oldestUpdatedAt) {
       const date = new Intl.DateTimeFormat('pt-BR', {
         day: '2-digit', month: '2-digit', timeZone: 'America/Sao_Paulo',
       }).format(new Date(p.oldestUpdatedAt))
-      parts.push(`preços atualizados em ${date}`)
+      parts.push(`preços de ${date}`)
     }
   }
   return {
     details: parts.length > 0 ? parts.join(' · ') : null,
-    warning: p.missingPremiumCount > 0 ? `${p.missingPremiumCount} operação(ões) sem prêmio atualizado` : null,
+    warning: p.missingPremiumCount > 0 ? `${p.missingPremiumCount} sem prêmio atualizado` : null,
   }
 }
