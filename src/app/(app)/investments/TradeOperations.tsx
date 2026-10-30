@@ -6,7 +6,7 @@ import {
   X, AlertTriangle, RefreshCw, CheckCircle2,
 } from 'lucide-react'
 import { toast } from 'sonner'
-import { formatCurrency } from '@/lib/utils/format'
+import { formatCurrency, formatDate } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import {
   createTrade, updateTrade, deleteTrade, updateCurrentPremium, closeOption,
@@ -17,6 +17,7 @@ import {
   daysBetween, todayInBrazil, parseDecimal,
   type OptionInput,
 } from '@/lib/options/calc'
+import { buildTradesView, type PartialSummary } from '@/lib/options/partial-summary'
 import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -206,12 +207,10 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
 
   const { start: periodStart, end: periodEnd } = getPeriodRange(period, customRange)
 
-  const filtered = useMemo(() => {
-    return trades.filter((t) => {
-      if (!periodStart || !periodEnd) return true
-      return t.entry_date >= periodStart && t.entry_date <= periodEnd
-    })
-  }, [trades, periodStart, periodEnd])
+  const { periodTrades: filtered, partial, openExposure, optionsList, outOfPeriodOpenIds } = useMemo(
+    () => buildTradesView(trades, periodStart, periodEnd),
+    [trades, periodStart, periodEnd]
+  )
 
   const swingTrades = useMemo(() => filtered.filter((t) => t.type === 'swing'), [filtered])
   const optionsTrades = useMemo(() => filtered.filter((t) => t.type === 'options'), [filtered])
@@ -219,9 +218,10 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
   const summaryTrades = filtered
   const calcs = useMemo(() => {
     const map = new Map<string, Calculated>()
-    for (const t of summaryTrades) map.set(t.id, calcTrade(t))
+    // Todas as operações: a lista de opções inclui abertas fora do período.
+    for (const t of trades) map.set(t.id, calcTrade(t))
     return map
-  }, [summaryTrades])
+  }, [trades])
 
   const { totalProfit, totalLoss, netResult, winRate, avgRent } = useMemo(() => {
     let profit = 0, loss = 0, wins = 0, total = 0, rentSum = 0
@@ -242,6 +242,8 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
       avgRent: total > 0 ? rentSum / total : null,
     }
   }, [summaryTrades, calcs])
+
+  const realizedSubtitle = activeTab === 'options' ? 'Resultado realizado · Swing Trade + Opções (encerradas)' : undefined
 
   function openNew(tab: TradeTab) {
     setFormTab(tab)
@@ -483,22 +485,25 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-        <SummaryCard label="Lucro total" value={formatCurrency(totalProfit)} color="text-emerald-600" bg="bg-emerald-50" />
-        <SummaryCard label="Prejuízo total" value={totalLoss < 0 ? `-${formatCurrency(Math.abs(totalLoss))}` : formatCurrency(0)} color="text-red-600" bg="bg-red-50" />
+        <SummaryCard label="Lucro total" subtitle={realizedSubtitle} value={formatCurrency(totalProfit)} color="text-emerald-600" bg="bg-emerald-50" />
+        <SummaryCard label="Prejuízo total" subtitle={realizedSubtitle} value={totalLoss < 0 ? `-${formatCurrency(Math.abs(totalLoss))}` : formatCurrency(0)} color="text-red-600" bg="bg-red-50" />
         <SummaryCard
           label="Resultado líquido"
+          subtitle={realizedSubtitle}
           value={formatCurrency(netResult)}
           color={netResult >= 0 ? 'text-emerald-600' : 'text-red-600'}
           bg={netResult >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
         />
         <SummaryCard
           label="Rentab. média"
+          subtitle={realizedSubtitle}
           value={avgRent != null ? fmtPct(avgRent) : '—'}
           color={avgRent == null ? 'text-gray-400' : avgRent >= 0 ? 'text-emerald-600' : 'text-red-600'}
           bg={avgRent == null ? 'bg-gray-50' : avgRent >= 0 ? 'bg-emerald-50' : 'bg-red-50'}
         />
         <SummaryCard
           label="Taxa de acerto"
+          subtitle={realizedSubtitle}
           value={fmtNum(winRate, 1) + '%'}
           color="text-blue-600"
           bg="bg-blue-50"
@@ -562,15 +567,17 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
               Nova operação
             </button>
           </div>
-          {optionsTrades.length === 0 ? (
+          {optionsList.length === 0 ? (
             <div className="py-12 text-center text-sm text-gray-400">
               Nenhuma operação de Opções no período.
             </div>
           ) : (
             <>
-              <OptionsTotals trades={optionsTrades} />
+              <PartialResultCard partial={partial} />
+              <OptionsTotals trades={optionsTrades} openExposure={openExposure} />
               <OptionsTable
-                trades={optionsTrades}
+                trades={optionsList}
+                outOfPeriodOpenIds={outOfPeriodOpenIds}
                 calcs={calcs}
                 onEdit={openEdit}
                 onDelete={(id) => setDeleteConfirm(id)}
@@ -785,28 +792,57 @@ function SwingTable({ trades, calcs, onEdit, onDelete }: {
 
 // ─── Options Table ─────────────────────────────────────────────────────────────
 
-function OptionsTotals({ trades }: { trades: TradeOperation[] }) {
-  const s = useMemo(() => summarizeOptions(trades.map(optionInputFromTrade)), [trades])
-  const items = [
-    { label: 'Capital pago (titular)', value: s.paid },
-    { label: 'Prêmio recebido (lançador)', value: s.received },
-    { label: 'Exposição em aberto (puts lançadas)', value: s.openExposure },
-    { label: 'Resultado não realizado', value: s.unrealizedResult },
-  ]
+function PartialResultCard({ partial: p }: { partial: PartialSummary }) {
+  const hasResult = p.includedCount > 0
+  const details = hasResult && [
+    `${p.includedCount} ${p.includedCount === 1 ? 'operação aberta incluída' : 'operações abertas incluídas'}`,
+    p.oldestUpdatedAt && `preços atualizados em ${fmtDayMonth(p.oldestUpdatedAt)}`,
+  ].filter(Boolean).join(' · ')
+
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 px-5 py-3 border-b border-gray-50 text-xs">
-      {items.map((item) => (
-        <div key={item.label}>
-          <p className="text-gray-400 mb-0.5">{item.label}</p>
-          <p className="font-semibold text-gray-700 tabular-nums">{formatCurrency(item.value)}</p>
-        </div>
-      ))}
+    <div className="px-5 py-4 border-b border-gray-50 bg-gray-50/60">
+      <p className="text-sm font-semibold text-gray-900">Resultado parcial</p>
+      <p className="text-xs text-gray-400">operações abertas · não realizado</p>
+      <p className={cn(
+        'mt-1 text-2xl font-bold tabular-nums',
+        !hasResult ? 'text-gray-400' : p.result >= 0 ? 'text-emerald-600' : 'text-red-600'
+      )}>
+        {hasResult ? (p.result >= 0 ? '+' : '') + formatCurrency(p.result) : '—'}
+      </p>
+      {details && <p className="mt-1 text-xs text-gray-500">{details}</p>}
+      {p.missingPremiumCount > 0 && (
+        <p className="mt-1 text-xs font-medium text-amber-600">
+          {p.missingPremiumCount} operação(ões) sem prêmio atualizado
+        </p>
+      )}
     </div>
   )
 }
 
-function OptionsTable({ trades, calcs, onEdit, onDelete, onUpdatePremium, onCloseOption }: {
+function OptionsTotals({ trades, openExposure }: { trades: TradeOperation[]; openExposure: number }) {
+  const s = useMemo(() => summarizeOptions(trades.map(optionInputFromTrade)), [trades])
+  const items = [
+    { label: 'Capital pago (titular)', value: s.paid },
+    { label: 'Prêmio recebido (lançador)', value: s.received },
+    { label: 'Exposição em aberto (puts lançadas)', value: openExposure },
+  ]
+  return (
+    <>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 px-5 py-3 border-b border-gray-50 text-xs">
+        {items.map((item) => (
+          <div key={item.label}>
+            <p className="text-gray-400 mb-0.5">{item.label}</p>
+            <p className="font-semibold text-gray-700 tabular-nums">{formatCurrency(item.value)}</p>
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onUpdatePremium, onCloseOption }: {
   trades: TradeOperation[]
+  outOfPeriodOpenIds: Set<string>
   calcs: Map<string, Calculated>
   onEdit: (t: TradeOperation) => void
   onDelete: (id: string) => void
@@ -837,6 +873,9 @@ function OptionsTable({ trades, calcs, onEdit, onDelete, onUpdatePremium, onClos
           {isExpired
             ? <span className="text-xs font-semibold text-red-600">💀 Virou pó</span>
             : <OptionStatusBadge status={t.option_status as OptionStatus} />}
+          {outOfPeriodOpenIds.has(t.id) && (
+            <span className="block mt-0.5 text-gray-400" title={`Entrada em ${formatDate(t.entry_date)}`}>fora do período</span>
+          )}
         </td>
         <td className="px-4 py-2.5 font-semibold text-gray-900">{t.ticker}</td>
         <td className="px-4 py-2.5 text-gray-700">{t.option_series ?? '—'}</td>
@@ -850,7 +889,7 @@ function OptionsTable({ trades, calcs, onEdit, onDelete, onUpdatePremium, onClos
         </td>
         <td className="px-4 py-2.5 text-right tabular-nums">{t.strike != null ? fmtNum(t.strike, 2) : '—'}</td>
         <td className="px-4 py-2.5 text-gray-600">
-          {t.expiration_date ?? '—'}
+          {t.expiration_date ? formatDate(t.expiration_date) : '—'}
           {daysLeft != null && (
             <span className={cn('block', daysLeft <= 7 ? 'text-amber-600 font-medium' : 'text-gray-400')}>
               {daysLeft < 0 ? `venceu há ${-daysLeft}d` : daysLeft === 0 ? 'vence hoje' : `${daysLeft}d`}
@@ -869,7 +908,7 @@ function OptionsTable({ trades, calcs, onEdit, onDelete, onUpdatePremium, onClos
           {c?.resultado != null ? (pos ? '+' : '') + formatCurrency(c.resultado) : 'Em aberto'}
           {c?.resultKind === 'unrealized' && (
             <span className="block font-normal text-gray-400">
-              não realizado{t.current_premium_updated_at && ` · atualizado em ${fmtDayMonth(t.current_premium_updated_at)}`}
+              parcial{t.current_premium_updated_at && ` · atualizado em ${fmtDayMonth(t.current_premium_updated_at)}`}
             </span>
           )}
         </td>
@@ -1219,7 +1258,7 @@ function UpdatePremiumForm({ trade, isPending, onSubmit, onClose }: {
       <FormRow label="Prêmio atual por opção (R$)">
         <input type="text" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(e.target.value)} className={inputCls} placeholder="0,00" />
       </FormRow>
-      {c?.result != null && <ResultPreview label="Resultado não realizado" result={c.result} />}
+      {c?.result != null && <ResultPreview label="Resultado parcial" result={c.result} />}
       <ModalActions
         confirmLabel="Salvar"
         disabled={isPending || !value}
@@ -1438,10 +1477,11 @@ function RowActions({ onEdit, onDelete }: { onEdit: () => void; onDelete: () => 
   )
 }
 
-function SummaryCard({ label, value, color, bg }: { label: string; value: string; color: string; bg: string }) {
+function SummaryCard({ label, subtitle, value, color, bg }: { label: string; subtitle?: string; value: string; color: string; bg: string }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 px-4 py-3">
       <p className="text-xs text-gray-500 font-medium mb-1">{label}</p>
+      {subtitle && <p className="text-[11px] leading-tight text-gray-400 mb-1">{subtitle}</p>}
       <div className={cn('inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full', bg)}>
         <p className={cn('text-sm font-bold tabular-nums', color)}>{value}</p>
       </div>
