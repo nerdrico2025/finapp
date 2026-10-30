@@ -33,6 +33,8 @@ export interface Database {
           subscription_id: string | null
           subscription_status: string | null
           current_period_end: string | null
+          show_swing_trades: boolean
+          show_option_trades: boolean
         }
         Insert: {
           id: string
@@ -55,6 +57,8 @@ export interface Database {
           subscription_id?: string | null
           subscription_status?: string | null
           current_period_end?: string | null
+          show_swing_trades?: boolean
+          show_option_trades?: boolean
         }
         Update: {
           email?: string
@@ -75,6 +79,8 @@ export interface Database {
           subscription_id?: string | null
           subscription_status?: string | null
           current_period_end?: string | null
+          show_swing_trades?: boolean
+          show_option_trades?: boolean
         }
         Relationships: never[]
       }

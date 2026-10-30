@@ -153,7 +153,7 @@ export function getOptionTargetNotices(trades: TradeOperation[], today: string):
   const notices: OptionTargetNotice[] = []
   for (const t of trades) {
     if (t.type !== 'options' || t.option_status !== 'open' || t.current_premium == null) continue
-    const { status, progressPct } = computeTarget(targetInputFromTrade(t, today))
+    const { status, progressPct, stale, staleDays } = computeTarget(targetInputFromTrade(t, today))
     if (status === 'none' || status === 'progress') continue
 
     const series = t.option_series ?? t.ticker
@@ -161,7 +161,8 @@ export function getOptionTargetNotices(trades: TradeOperation[], today: string):
     const message = status === 'stop_reached'
       ? `${series}: prêmio atual ${current}, stop de ${formatPremium(t.stop_loss ?? 0)} atingido`
       : `${series}: prêmio atual ${current}, ${Math.floor(progressPct ?? 0)}% do caminho até o alvo ${formatPremium(t.target_price ?? 0)}`
-    notices.push({ id: t.id, series, status, message })
+    const staleSuffix = stale ? ` · prêmio atualizado há ${staleDays} dias` : ''
+    notices.push({ id: t.id, series, status, message: message + staleSuffix })
   }
   return notices.sort((a, b) => NOTICE_ORDER[a.status] - NOTICE_ORDER[b.status])
 }

@@ -12,6 +12,12 @@ import { getTotalBalance } from '@/lib/actions/accounts'
 import { getTransactions } from '@/lib/actions/transactions'
 import { getUpcomingAlerts } from '@/lib/actions/billAlerts'
 import { getGoals } from '@/lib/actions/goals'
+import { getTrades } from '@/lib/actions/trades'
+import { getVisibleTradeTypes } from '@/lib/actions/settings'
+import {
+  describePartial, monthRange, summarizeOptionsPeriod,
+  type OptionsPeriodSummary,
+} from '@/lib/options/period-summary'
 import {
   getMonthlySummary,
   getExpensesByCategory,
@@ -86,6 +92,8 @@ export default async function DashboardPage({
     { data: recentTx },
     { data: upcomingAlerts },
     { data: goals },
+    optionTrades,
+    visibleTradeTypes,
   ] = await Promise.all([
     getTotalBalance(),
     getMonthlySummary(month, year),
@@ -94,7 +102,12 @@ export default async function DashboardPage({
     getTransactions({ pageSize: 5, month, year }),
     getUpcomingAlerts(7),
     getGoals(),
+    getTrades({ type: 'options' }),
+    getVisibleTradeTypes(),
   ])
+
+  const { start: monthStart, end: monthEnd } = monthRange(month, year)
+  const optionsSummary = summarizeOptionsPeriod(optionTrades, monthStart, monthEnd)
 
   const activeGoals = (goals ?? [])
     .filter((g) => g.status === 'active')
@@ -198,6 +211,9 @@ export default async function DashboardPage({
           valueColor={summary.balance >= 0 ? 'text-emerald-600' : 'text-red-600'}
         />
       </div>
+
+      {/* ── Options ──────────────────────────────────────────────────────── */}
+      {visibleTradeTypes.options && optionsSummary.totalCount > 0 && <OptionsBlock summary={optionsSummary} />}
 
       {/* ── Upcoming Alerts ──────────────────────────────────────────────── */}
       {(upcomingAlerts ?? []).length > 0 && (
@@ -321,6 +337,55 @@ export default async function DashboardPage({
         ) : (
           <GoalsWidget activeGoals={activeGoals} />
         )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Options Block ────────────────────────────────────────────────────────────
+
+function OptionsBlock({ summary }: { summary: OptionsPeriodSummary }) {
+  const { partial, realizedResult, closedCount } = summary
+  const { details, warning } = describePartial(partial)
+  const hasPartial = partial.includedCount > 0
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-2">
+        <h2 className="text-sm font-semibold text-gray-900">Opções</h2>
+        <Link
+          href="/investments?aba=opcoes"
+          className="text-xs text-emerald-600 hover:text-emerald-700 font-medium flex items-center gap-1"
+        >
+          Ver operações <ArrowRight className="w-3 h-3" />
+        </Link>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="bg-white rounded-2xl border border-gray-100 px-5 py-4">
+          <p className="text-xs text-gray-500 font-medium">Resultado realizado</p>
+          <p className={cn(
+            'mt-1 text-xl font-bold tabular-nums leading-tight',
+            closedCount === 0 ? 'text-gray-400' : realizedResult >= 0 ? 'text-emerald-600' : 'text-red-600'
+          )}>
+            {closedCount === 0 ? '—' : (realizedResult >= 0 ? '+' : '') + formatCurrency(realizedResult)}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">operações encerradas no mês · realizado</p>
+          <p className="mt-1 text-xs text-gray-500">
+            {closedCount === 1 ? '1 operação encerrada' : `${closedCount} operações encerradas`}
+          </p>
+        </div>
+        <div className="bg-white rounded-2xl border border-gray-100 px-5 py-4">
+          <p className="text-xs text-gray-500 font-medium">Resultado parcial</p>
+          <p className={cn(
+            'mt-1 text-xl font-bold tabular-nums leading-tight',
+            !hasPartial ? 'text-gray-400' : partial.result >= 0 ? 'text-emerald-600' : 'text-red-600'
+          )}>
+            {hasPartial ? (partial.result >= 0 ? '+' : '') + formatCurrency(partial.result) : '—'}
+          </p>
+          <p className="mt-1 text-xs text-gray-400">operações abertas · não realizado</p>
+          {details && <p className="mt-1 text-xs text-gray-500">{details}</p>}
+          {warning && <p className="mt-1 text-xs font-medium text-amber-600">{warning}</p>}
+        </div>
       </div>
     </div>
   )

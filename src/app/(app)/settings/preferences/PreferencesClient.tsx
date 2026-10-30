@@ -1,12 +1,15 @@
 'use client'
 
+import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { Loader2, SlidersHorizontal } from 'lucide-react'
 import { toast } from 'sonner'
-import { updatePreferences } from '@/lib/actions/settings'
+import { cn } from '@/lib/utils/cn'
+import { updatePreferences, updateVisibleTradeTypes } from '@/lib/actions/settings'
+import type { VisibleTradeTypes } from '@/lib/options/visible-trade-types'
 
 const CURRENCIES = [
   { value: 'BRL', label: 'Real brasileiro (R$)' },
@@ -22,7 +25,10 @@ const schema = z.object({
 
 type Form = z.infer<typeof schema>
 
-export function PreferencesClient({ currency }: { currency: string }) {
+export function PreferencesClient({ currency, visibleTradeTypes }: {
+  currency: string
+  visibleTradeTypes: VisibleTradeTypes
+}) {
   const router = useRouter()
 
   const {
@@ -45,6 +51,7 @@ export function PreferencesClient({ currency }: { currency: string }) {
   }
 
   return (
+    <div className="space-y-4">
     <div className="bg-white rounded-2xl border border-gray-100 p-6">
       <h2 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-4">
         <SlidersHorizontal className="w-4 h-4 text-gray-400" />
@@ -76,6 +83,76 @@ export function PreferencesClient({ currency }: { currency: string }) {
           </button>
         </div>
       </form>
+    </div>
+    <TradeTypesCard initial={visibleTradeTypes} />
+    </div>
+  )
+}
+
+function TradeTypesCard({ initial }: { initial: VisibleTradeTypes }) {
+  const router = useRouter()
+  const [visible, setVisible] = useState({ swing: initial.swing, options: initial.options })
+  const [isPending, startTransition] = useTransition()
+  const onlyOneOn = visible.swing !== visible.options
+
+  function toggle(type: 'swing' | 'options') {
+    const previous = visible
+    const next = { ...visible, [type]: !visible[type] }
+    setVisible(next)
+    startTransition(async () => {
+      const { error } = await updateVisibleTradeTypes(next)
+      if (error) {
+        setVisible(previous)
+        toast.error(error)
+        return
+      }
+      toast.success('Preferências salvas!')
+      router.refresh()
+    })
+  }
+
+  const rows = [
+    { type: 'swing' as const, label: 'Swing Trade' },
+    { type: 'options' as const, label: 'Opções' },
+  ]
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-100 p-6">
+      <h2 className="text-sm font-semibold text-gray-900 mb-1">Tipos de operação visíveis</h2>
+      <p className="text-xs text-gray-500 mb-4">
+        Define o que aparece em Investimentos → Operações e no Dashboard. Ocultar um tipo não apaga nem altera os dados dele.
+      </p>
+      <div className="space-y-3 max-w-sm">
+        {rows.map(({ type, label }) => {
+          const on = visible[type]
+          const isLast = on && onlyOneOn
+          return (
+            <div key={type} className="flex items-center justify-between gap-3">
+              <span className="text-sm font-medium text-gray-700">{label}</span>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={on}
+                aria-label={label}
+                disabled={isPending || isLast}
+                onClick={() => toggle(type)}
+                className={cn(
+                  'relative w-10 h-6 rounded-full transition-colors disabled:cursor-not-allowed',
+                  on ? 'bg-emerald-600' : 'bg-gray-300',
+                  isLast && 'opacity-60',
+                )}
+              >
+                <span className={cn('absolute top-1 left-1 w-4 h-4 bg-white rounded-full transition-transform', on && 'translate-x-4')} />
+              </button>
+            </div>
+          )
+        })}
+      </div>
+      {onlyOneOn && (
+        <p className="mt-3 text-xs text-amber-600">
+          Pelo menos um tipo precisa ficar visível, senão a tela de Operações ficaria vazia.
+        </p>
+      )}
     </div>
   )
 }

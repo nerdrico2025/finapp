@@ -17,7 +17,9 @@ import {
   daysBetween, todayInBrazil, parseDecimal,
   type OptionInput,
 } from '@/lib/options/calc'
+import type { VisibleTradeTypes } from '@/lib/options/visible-trade-types'
 import { buildTradesView, type PartialSummary } from '@/lib/options/partial-summary'
+import { describePartial } from '@/lib/options/period-summary'
 import {
   computeTarget, targetInputFromTrade, validateTarget,
   type TargetCalc, type TargetInput,
@@ -31,6 +33,7 @@ type Period = 'month' | '3m' | '6m' | 'year' | 'custom'
 
 interface Props {
   initialTrades: TradeOperation[]
+  visibleTradeTypes: VisibleTradeTypes
   /** Vem do aviso de vencimento: abre direto o fluxo "Encerrar operação". */
   closeOptionId?: string
   openOptionsTab?: boolean
@@ -194,9 +197,11 @@ interface FormState {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }: Props) {
+export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionId, openOptionsTab }: Props) {
   const [trades, setTrades] = useState<TradeOperation[]>(initialTrades)
-  const [activeTab, setActiveTab] = useState<TradeTab>(closeOptionId || openOptionsTab ? 'options' : 'swing')
+  const [selectedTab, setActiveTab] = useState<TradeTab>(closeOptionId || openOptionsTab ? 'options' : 'swing')
+  const visibleTabs = visibleTradeTypes.types
+  const activeTab = visibleTabs.includes(selectedTab) ? selectedTab : visibleTabs[0]!
   const [period, setPeriod] = useState<Period>('year')
   const [customRange, setCustomRange] = useState({ start: '', end: '' })
   const [formOpen, setFormOpen] = useState(false)
@@ -212,15 +217,17 @@ export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }
 
   const { start: periodStart, end: periodEnd } = getPeriodRange(period, customRange)
 
-  const { periodTrades: filtered, partial, openExposure, optionsList, outOfPeriodOpenIds } = useMemo(
+  const { periodTrades: filtered, capitalTrades, partial, openExposure, optionsList, outOfPeriodOpenIds } = useMemo(
     () => buildTradesView(trades, periodStart, periodEnd),
     [trades, periodStart, periodEnd]
   )
 
   const swingTrades = useMemo(() => filtered.filter((t) => t.type === 'swing'), [filtered])
-  const optionsTrades = useMemo(() => filtered.filter((t) => t.type === 'options'), [filtered])
 
-  const summaryTrades = filtered
+  const summaryTrades = useMemo(
+    () => filtered.filter((t) => visibleTabs.includes(t.type)),
+    [filtered, visibleTabs]
+  )
   const calcs = useMemo(() => {
     const map = new Map<string, Calculated>()
     // Todas as operações: a lista de opções inclui abertas fora do período.
@@ -248,7 +255,11 @@ export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }
     }
   }, [summaryTrades, calcs])
 
-  const realizedSubtitle = activeTab === 'options' ? 'Resultado realizado · Swing Trade + Opções (encerradas)' : undefined
+  const realizedSubtitle = activeTab !== 'options'
+    ? undefined
+    : visibleTradeTypes.swing
+      ? 'Resultado realizado · Swing Trade + Opções (encerradas)'
+      : 'Resultado realizado · Opções (encerradas)'
 
   function openNew(tab: TradeTab) {
     setFormTab(tab)
@@ -525,6 +536,7 @@ export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }
       </div>
 
       {/* Inner tab: Swing | Opções */}
+      {visibleTabs.length > 1 && (
       <div className="flex gap-1 bg-gray-100 p-1 rounded-xl w-fit">
         {(['swing', 'options'] as TradeTab[]).map((t) => (
           <button
@@ -539,6 +551,7 @@ export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }
           </button>
         ))}
       </div>
+      )}
 
       {/* Swing Trade table */}
       {activeTab === 'swing' && (
@@ -587,8 +600,7 @@ export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }
             </div>
           ) : (
             <>
-              <PartialResultCard partial={partial} />
-              <OptionsTotals trades={optionsTrades} openExposure={openExposure} />
+              <OptionsTotals partial={partial} capitalTrades={capitalTrades} openExposure={openExposure} />
               <OptionsTable
                 trades={optionsList}
                 outOfPeriodOpenIds={outOfPeriodOpenIds}
@@ -808,49 +820,58 @@ function SwingTable({ trades, calcs, onEdit, onDelete }: {
 
 function PartialResultCard({ partial: p }: { partial: PartialSummary }) {
   const hasResult = p.includedCount > 0
-  const details = hasResult && [
-    `${p.includedCount} ${p.includedCount === 1 ? 'operação aberta incluída' : 'operações abertas incluídas'}`,
-    p.oldestUpdatedAt && `preços atualizados em ${fmtDayMonth(p.oldestUpdatedAt)}`,
-  ].filter(Boolean).join(' · ')
+  const { details, warning } = describePartial(p)
 
   return (
-    <div className="px-5 py-4 border-b border-gray-50 bg-gray-50/60">
-      <p className="text-sm font-semibold text-gray-900">Resultado parcial</p>
-      <p className="text-xs text-gray-400">operações abertas · não realizado</p>
-      <p className={cn(
-        'mt-1 text-2xl font-bold tabular-nums',
-        !hasResult ? 'text-gray-400' : p.result >= 0 ? 'text-emerald-600' : 'text-red-600'
-      )}>
-        {hasResult ? (p.result >= 0 ? '+' : '') + formatCurrency(p.result) : '—'}
-      </p>
+    <TotalCard
+      label="Resultado parcial"
+      support="operações abertas · não realizado"
+      value={hasResult ? (p.result >= 0 ? '+' : '') + formatCurrency(p.result) : '—'}
+      valueColor={!hasResult ? 'text-gray-400' : p.result >= 0 ? 'text-emerald-600' : 'text-red-600'}
+    >
       {details && <p className="mt-1 text-xs text-gray-500">{details}</p>}
-      {p.missingPremiumCount > 0 && (
-        <p className="mt-1 text-xs font-medium text-amber-600">
-          {p.missingPremiumCount} operação(ões) sem prêmio atualizado
-        </p>
-      )}
+      {warning && <p className="mt-1 text-xs font-medium text-amber-600">{warning}</p>}
+    </TotalCard>
+  )
+}
+
+function TotalCard({ label, support, value, valueColor = 'text-gray-900', attention = false, children }: {
+  label: string
+  support: string
+  value: string
+  valueColor?: string
+  attention?: boolean
+  children?: React.ReactNode
+}) {
+  return (
+    <div className={cn('bg-white rounded-2xl border px-4 py-3', attention ? 'border-amber-300' : 'border-gray-100')}>
+      <p className="text-xs text-gray-500 font-medium">{label}</p>
+      <p className={cn('mt-1 text-lg font-semibold tabular-nums leading-tight', valueColor)}>{value}</p>
+      <p className="mt-1 text-xs text-gray-400">{support}</p>
+      {children}
     </div>
   )
 }
 
-function OptionsTotals({ trades, openExposure }: { trades: TradeOperation[]; openExposure: number }) {
-  const s = useMemo(() => summarizeOptions(trades.map(optionInputFromTrade)), [trades])
-  const items = [
-    { label: 'Capital pago (titular)', value: s.paid },
-    { label: 'Prêmio recebido (lançador)', value: s.received },
-    { label: 'Exposição em aberto (puts lançadas)', value: openExposure },
-  ]
+function OptionsTotals({ partial, capitalTrades, openExposure }: {
+  partial: PartialSummary
+  capitalTrades: TradeOperation[]
+  openExposure: number
+}) {
+  const s = useMemo(() => summarizeOptions(capitalTrades.map(optionInputFromTrade)), [capitalTrades])
   return (
-    <>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 px-5 py-3 border-b border-gray-50 text-xs">
-        {items.map((item) => (
-          <div key={item.label}>
-            <p className="text-gray-400 mb-0.5">{item.label}</p>
-            <p className="font-semibold text-gray-700 tabular-nums">{formatCurrency(item.value)}</p>
-          </div>
-        ))}
-      </div>
-    </>
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 px-5 py-4 border-b border-gray-50">
+      <PartialResultCard partial={partial} />
+      <TotalCard label="Capital pago (titular)" support="titulares, no período" value={formatCurrency(s.paid)} />
+      <TotalCard label="Prêmio recebido (lançador)" support="lançadores, no período" value={formatCurrency(s.received)} />
+      <TotalCard
+        label="Exposição em aberto (puts lançadas)"
+        support="todas as abertas, sem filtro de período"
+        value={formatCurrency(openExposure)}
+        valueColor={openExposure > 0 ? 'text-amber-600' : 'text-gray-900'}
+        attention={openExposure > 0}
+      />
+    </div>
   )
 }
 
