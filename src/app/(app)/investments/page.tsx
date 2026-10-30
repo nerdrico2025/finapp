@@ -7,7 +7,7 @@ import { getAccounts } from '@/lib/actions/accounts'
 import { getCategories } from '@/lib/actions/categories'
 import { InvestmentsClient } from './InvestmentsClient'
 
-export default async function InvestmentsPage({ searchParams }: { searchParams: { encerrar?: string } }) {
+export default async function InvestmentsPage({ searchParams }: { searchParams: { encerrar?: string; aba?: string } }) {
   const [investmentData, { data: allAccounts }, { data: categories }, history, trades] = await Promise.all([
     getInvestmentData(),
     getAccounts(),
@@ -24,6 +24,7 @@ export default async function InvestmentsPage({ searchParams }: { searchParams: 
       history={history}
       initialTrades={trades}
       closeOptionId={searchParams.encerrar}
+      openOptionsTab={searchParams.aba === 'opcoes'}
     />
   )
 }

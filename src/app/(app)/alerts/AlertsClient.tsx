@@ -17,6 +17,7 @@ import {
   type UpcomingAlert,
 } from '@/lib/actions/billAlerts'
 import type { OptionExpiryNotice } from '@/lib/options/calc'
+import type { OptionTargetNotice } from '@/lib/options/target'
 import { toast } from 'sonner'
 import { BillAlertForm } from '@/components/forms/BillAlertForm'
 import { formatCurrency, formatDate } from '@/lib/utils/format'
@@ -42,10 +43,11 @@ interface Props {
   alerts: BillAlert[]
   upcoming: UpcomingAlert[]
   optionNotices: OptionExpiryNotice[]
+  optionTargetNotices: OptionTargetNotice[]
   googleConnected: boolean
 }
 
-export function AlertsClient({ alerts, upcoming, optionNotices, googleConnected }: Props) {
+export function AlertsClient({ alerts, upcoming, optionNotices, optionTargetNotices, googleConnected }: Props) {
   const [modal, setModal] = useState<Modal>({ type: 'closed' })
   const [toggling, setToggling] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
@@ -157,6 +159,22 @@ export function AlertsClient({ alerts, upcoming, optionNotices, googleConnected 
                       ? '— vence hoje'
                       : `— vence em ${formatDate(n.expirationDate)}`}
                   </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Option target notices */}
+        {optionTargetNotices.length > 0 && (
+          <div className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-5 py-4">
+            <Bell className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+            <ul className="space-y-1">
+              {optionTargetNotices.map((n) => (
+                <li key={n.id} className="text-sm text-amber-900">
+                  <Link href="/investments?aba=opcoes" className="font-medium underline hover:text-amber-700">
+                    {n.message}
+                  </Link>
                 </li>
               ))}
             </ul>

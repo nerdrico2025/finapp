@@ -18,6 +18,10 @@ import {
   type OptionInput,
 } from '@/lib/options/calc'
 import { buildTradesView, type PartialSummary } from '@/lib/options/partial-summary'
+import {
+  computeTarget, targetInputFromTrade, validateTarget,
+  type TargetCalc, type TargetInput,
+} from '@/lib/options/target'
 import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +33,7 @@ interface Props {
   initialTrades: TradeOperation[]
   /** Vem do aviso de vencimento: abre direto o fluxo "Encerrar operação". */
   closeOptionId?: string
+  openOptionsTab?: boolean
 }
 
 interface Calculated {
@@ -189,9 +194,9 @@ interface FormState {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-export function TradeOperations({ initialTrades, closeOptionId }: Props) {
+export function TradeOperations({ initialTrades, closeOptionId, openOptionsTab }: Props) {
   const [trades, setTrades] = useState<TradeOperation[]>(initialTrades)
-  const [activeTab, setActiveTab] = useState<TradeTab>(closeOptionId ? 'options' : 'swing')
+  const [activeTab, setActiveTab] = useState<TradeTab>(closeOptionId || openOptionsTab ? 'options' : 'swing')
   const [period, setPeriod] = useState<Period>('year')
   const [customRange, setCustomRange] = useState({ start: '', end: '' })
   const [formOpen, setFormOpen] = useState(false)
@@ -316,6 +321,15 @@ export function TradeOperations({ initialTrades, closeOptionId }: Props) {
       ? ep > 0
       : validateOption({ quantity: qty, strike, premium: prem }).errors.length === 0
     const optionFieldsOk = formTab === 'swing' || (!!form.option_series && !!form.expiration_date)
+    if (formTab === 'options') {
+      const [targetError] = validateTarget({
+        position: form.position,
+        premium: prem,
+        targetPremium: form.target_price ? parseNum(form.target_price) : null,
+        stopPremium: form.stop_loss ? parseNum(form.stop_loss) : null,
+      })
+      if (targetError) { toast.error(targetError.message); return }
+    }
     if (!form.ticker || !form.entry_date || !priceOk || !optionFieldsOk || qty <= 0) {
       toast.error('Preencha os campos obrigatórios')
       return
@@ -866,8 +880,10 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
     const pos = c?.resultado != null && c.resultado >= 0
     const isExpired = t.option_status === 'expired'
     const isOpen = t.option_status === 'open'
+    const hasTargetOrStop = isOpen && (t.target_price != null || t.stop_loss != null)
     const daysLeft = isOpen && t.expiration_date ? daysBetween(todayBr, t.expiration_date) : null
     return (
+      <>
       <tr className="border-t border-gray-50 hover:bg-gray-50">
         <td className="px-4 py-2.5">
           {isExpired
@@ -942,6 +958,18 @@ function OptionsTable({ trades, outOfPeriodOpenIds, calcs, onEdit, onDelete, onU
           </div>
         </td>
       </tr>
+      {hasTargetOrStop && (
+        <tr>
+          <td colSpan={14} className="px-4 pb-2.5">
+            <TargetIndicator
+              target={computeTarget(targetInputFromTrade(t, todayBr))}
+              targetPremium={t.target_price}
+              stopPremium={t.stop_loss}
+            />
+          </td>
+        </tr>
+      )}
+      </>
     )
   }
 
@@ -1015,6 +1043,16 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
     strike: parseNum(form.strike),
     premium: parseNum(form.premium),
   }).warnings
+  const targetErrors = validateTarget({
+    position: form.position,
+    premium: parseNum(form.premium),
+    targetPremium: form.target_price ? parseNum(form.target_price) : null,
+    stopPremium: form.stop_loss ? parseNum(form.stop_loss) : null,
+  })
+  const targetFieldError = (field: 'target' | 'stop') => {
+    const message = targetErrors.find((e) => e.field === field)?.message
+    return message && <p className="mt-1 text-xs text-red-600">{message}</p>
+  }
 
   return (
     <div className="w-full max-w-xl p-6 max-h-[90vh] overflow-y-auto">
@@ -1131,6 +1169,18 @@ function TradeForm({ formTab, form, setF, previewCalc, isPending, isEditing, onS
             <FormRow label="Taxas">
               <input type="text" inputMode="decimal" value={form.fees} onChange={(e) => setF('fees', e.target.value)} className={inputCls} />
             </FormRow>
+            <div className="grid grid-cols-2 gap-3 items-start">
+              <FormRow label="Prêmio alvo (R$)">
+                <input type="text" inputMode="decimal" value={form.target_price} onChange={(e) => setF('target_price', e.target.value)} className={inputCls} placeholder="Opcional" />
+                <p className="mt-1 text-xs text-gray-400">Preço de saída que você pretende; o app avisa quando o prêmio atual se aproximar dele</p>
+                {targetFieldError('target')}
+              </FormRow>
+              <FormRow label="Prêmio de stop (R$)">
+                <input type="text" inputMode="decimal" value={form.stop_loss} onChange={(e) => setF('stop_loss', e.target.value)} className={inputCls} placeholder="Opcional" />
+                <p className="mt-1 text-xs text-gray-400">Preço em que você pretende sair para limitar a perda</p>
+                {targetFieldError('stop')}
+              </FormRow>
+            </div>
           </>
         )}
 
@@ -1186,6 +1236,23 @@ function OptionFooter({ form }: { form: FormState }) {
   const quantity = parseNum(form.quantity)
   const premium = parseNum(form.premium)
   const strike = form.strike ? parseNum(form.strike) : null
+  const targetPremium = form.target_price ? parseNum(form.target_price) : null
+  const hasValidTarget = targetPremium != null && validateTarget({
+    position: form.position, premium, targetPremium, stopPremium: null,
+  }).length === 0 && premium > 0
+  const atTarget = computeTarget({
+    optionType: form.option_type,
+    position: form.position,
+    strike,
+    premium,
+    currentPremium: null,
+    targetPremium,
+    stopPremium: null,
+    quantity,
+    fees: parseNum(form.fees),
+    currentPremiumUpdatedAt: null,
+    today: todayInBrazil(),
+  })
   const c = computeOption({
     optionType: form.option_type,
     position: form.position,
@@ -1216,6 +1283,12 @@ function OptionFooter({ form }: { form: FormState }) {
         <p className="text-gray-500 tabular-nums">
           {qtyLabel} × {fmtPremium(premium)} = {formatCurrency(c.premiumTotal)}
         </p>
+        {hasValidTarget && atTarget.projectedResultAtTarget != null && (
+          <p className="font-medium text-gray-700 tabular-nums">
+            Resultado no alvo: {fmtSigned(atTarget.projectedResultAtTarget)}
+            {atTarget.projectedReturnPctAtTarget != null && ` (${fmtPct(atTarget.projectedReturnPctAtTarget)})`}
+          </p>
+        )}
       </div>
       {form.position === 'writer' && (
         <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
@@ -1227,6 +1300,51 @@ function OptionFooter({ form }: { form: FormState }) {
           </p>
         </div>
       )}
+    </div>
+  )
+}
+
+function fmtSigned(v: number) {
+  return (v >= 0 ? '+' : '') + formatCurrency(v)
+}
+
+function TargetBadge({ status }: { status: TargetCalc['status'] }) {
+  const badges: Partial<Record<TargetCalc['status'], { label: string; cls: string }>> = {
+    near: { label: 'Próximo do alvo', cls: 'bg-amber-100 text-amber-700' },
+    reached: { label: 'Alvo atingido', cls: 'bg-emerald-100 text-emerald-700' },
+    stop_reached: { label: 'Stop atingido', cls: 'bg-red-100 text-red-700' },
+  }
+  const badge = badges[status]
+  if (!badge) return null
+  return <span className={cn('inline-block text-xs font-semibold px-1.5 py-0.5 rounded-full', badge.cls)}>{badge.label}</span>
+}
+
+function TargetIndicator({ target, targetPremium, stopPremium }: {
+  target: TargetCalc
+  targetPremium: number | null
+  stopPremium: number | null
+}) {
+  const { progressPct, status } = target
+  const barColor = status === 'stop_reached' ? 'bg-red-500'
+    : status === 'reached' ? 'bg-emerald-500'
+    : status === 'near' ? 'bg-amber-500'
+    : 'bg-gray-400'
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500">
+      <TargetBadge status={status} />
+      {targetPremium != null && (progressPct != null ? (
+        <>
+          <div className="w-32 h-1.5 bg-gray-100 rounded-full overflow-hidden" role="progressbar" aria-valuenow={Math.min(100, Math.floor(progressPct))} aria-valuemin={0} aria-valuemax={100}>
+            <div className={cn('h-full rounded-full', barColor)} style={{ width: `${Math.min(100, progressPct)}%` }} />
+          </div>
+          <span className="tabular-nums">{Math.floor(progressPct)}% do caminho até {fmtPremium(targetPremium)}</span>
+        </>
+      ) : (
+        <span className="tabular-nums">Alvo {fmtPremium(targetPremium)} · sem prêmio atual</span>
+      ))}
+      {stopPremium != null && <span className="tabular-nums">Stop {fmtPremium(stopPremium)}</span>}
+      {target.stale && <span className="text-amber-600">atualizado há {target.staleDays} dias</span>}
     </div>
   )
 }
@@ -1259,6 +1377,13 @@ function UpdatePremiumForm({ trade, isPending, onSubmit, onClose }: {
         <input type="text" inputMode="decimal" autoFocus value={value} onChange={(e) => setValue(e.target.value)} className={inputCls} placeholder="0,00" />
       </FormRow>
       {c?.result != null && <ResultPreview label="Resultado parcial" result={c.result} />}
+      {value && (trade.target_price != null || trade.stop_loss != null) && (
+        <TargetIndicator
+          target={computeTarget(typedTargetInput(trade, parsed))}
+          targetPremium={trade.target_price}
+          stopPremium={trade.stop_loss}
+        />
+      )}
       <ModalActions
         confirmLabel="Salvar"
         disabled={isPending || !value}
@@ -1267,6 +1392,11 @@ function UpdatePremiumForm({ trade, isPending, onSubmit, onClose }: {
       />
     </div>
   )
+}
+
+// O valor digitado ainda não foi salvo: o preço é o de agora, então nunca está desatualizado.
+function typedTargetInput(trade: TradeOperation, currentPremium: number): TargetInput {
+  return { ...targetInputFromTrade(trade, todayInBrazil()), currentPremium, currentPremiumUpdatedAt: null }
 }
 
 type CloseOutcome = CloseOptionData['outcome']
