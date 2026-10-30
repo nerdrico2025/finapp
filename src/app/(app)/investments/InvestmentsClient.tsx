@@ -28,6 +28,7 @@ interface Props {
   history: { points: HistoryPoint[]; accountIds: string[] }
   initialTrades: TradeOperation[]
   closeOptionId?: string
+  openOptionsTab?: boolean
 }
 
 type Tab = 'portfolio' | 'simulator' | 'trades'
@@ -64,10 +65,10 @@ function calcResults(pv: number, pmt: number, r: number) {
   })
 }
 
-export function InvestmentsClient({ investmentData, allAccounts, categories, history, initialTrades, closeOptionId }: Props) {
+export function InvestmentsClient({ investmentData, allAccounts, categories, history, initialTrades, closeOptionId, openOptionsTab }: Props) {
   const router = useRouter()
   const [importOpen, setImportOpen] = useState(false)
-  const [activeTab, setActiveTab] = useState<Tab>(closeOptionId ? 'trades' : 'portfolio')
+  const [activeTab, setActiveTab] = useState<Tab>(closeOptionId || openOptionsTab ? 'trades' : 'portfolio')
 
   // Optimistic local state for accounts (updated after balance change)
   const [localAccounts, setLocalAccounts] = useState<Account[]>(investmentData.accounts)
@@ -449,7 +450,7 @@ export function InvestmentsClient({ investmentData, allAccounts, categories, his
       )}
 
       {/* Trades Tab */}
-      {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} closeOptionId={closeOptionId} />}
+      {activeTab === 'trades' && <TradeOperations initialTrades={initialTrades} closeOptionId={closeOptionId} openOptionsTab={openOptionsTab} />}
 
       {/* Simulator Tab */}
       {activeTab === 'simulator' && (

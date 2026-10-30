@@ -10,6 +10,7 @@ import {
   validateOption,
   type OptionExpiryNotice,
 } from '@/lib/options/calc'
+import { getOptionTargetNotices, validateTarget, type OptionTargetNotice } from '@/lib/options/target'
 import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 export type TradeType = 'swing' | 'options'
@@ -50,7 +51,15 @@ function optionValidationError(formData: Partial<TradeFormData>): string | null 
     strike: formData.strike ?? null,
     premium: formData.premium ?? 0,
   })
-  return errors[0]?.message ?? null
+  if (errors[0]) return errors[0].message
+
+  const [targetError] = validateTarget({
+    position: formData.position ?? 'holder',
+    premium: formData.premium ?? 0,
+    targetPremium: formData.target_price ?? null,
+    stopPremium: formData.stop_loss ?? null,
+  })
+  return targetError?.message ?? null
 }
 
 async function removeExpiryEvents(
@@ -249,7 +258,7 @@ export async function updateCurrentPremium(
   if (error) return { error: error.message }
   if (!data) return { error: 'Operação não encontrada ou já encerrada.' }
 
-  revalidatePath('/investments')
+  revalidatePath('/', 'layout')
   return { error: null, updatedAt }
 }
 
@@ -318,6 +327,28 @@ export async function getExpiringOptions(): Promise<OptionExpiryNotice[]> {
 
   const { data } = await query
   return getOptionExpiryNotices(data ?? [], todayInBrazil())
+}
+
+export async function getOptionTargetAlerts(): Promise<OptionTargetNotice[]> {
+  const supabase = await createClient()
+
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return []
+
+  const entityId = await getActiveEntityId(supabase, user.id)
+
+  let query = supabase
+    .from('trade_operations')
+    .select('*')
+    .eq('user_id', user.id)
+    .eq('type', 'options')
+    .eq('option_status', 'open')
+    .not('current_premium', 'is', null)
+
+  if (entityId) query = query.eq('entity_id', entityId)
+
+  const { data } = await query
+  return getOptionTargetNotices((data ?? []) as TradeOperation[], todayInBrazil())
 }
 
 export async function deleteTrade(id: string): Promise<{ error: string | null }> {
