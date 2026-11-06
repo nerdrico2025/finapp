@@ -7,9 +7,16 @@ export interface ParsedRow {
   type: 'income' | 'expense'
   raw?: string
   error?: string
-  /** FITID do OFX/QFX — identificador único da transação dado pelo banco.
-   *  Só existe para esse formato; usado como camada 1 de deduplicação. */
+  /** Identificador único da transação dado pelo banco — FITID do OFX/QFX ou
+   *  "sicredi:<Identificador>" do CSV do Sicredi. Camada 1 de deduplicação. */
   bankTransactionId?: string
+  /** Aviso não bloqueante: a linha vem desmarcada, mas o usuário pode marcá-la. */
+  warning?: string
+  /** Acrescentado ao import_hash (ver generateImportHash). Só o perfil
+   *  Sicredi preenche; nos demais formatos o hash fica como sempre foi. */
+  hashSalt?: string
+  /** Saldo após o lançamento, quando o extrato traz (só para conferência). */
+  balance?: number | null
 }
 
 // ─── PDF heuristics ───────────────────────────────────────────────────────────

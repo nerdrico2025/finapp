@@ -21,13 +21,13 @@ export function normalizeDescription(raw: string): string {
 }
 
 // Mapeia palavras comuns em descrições de transações brasileiras para padrões de nomes de categoria.
-// Funciona sem API externa — simples inclusão de substring após normalização.
+// Funciona sem API externa — comparação por palavra após normalização (ver keywordMatches).
 export const KEYWORD_RULES: Array<{ words: string[]; categoryPatterns: string[] }> = [
-  { words: ['uber', '99', 'cabify', 'indrive', 'taxi', 'onibus', 'metro', 'trem', 'brt', 'vlt', 'passagem'], categoryPatterns: ['aplicativos de transporte', 'transporte', 'mobilidade', 'taxi', 'deslocamento'] },
-  { words: ['gasolina', 'etanol', 'combustivel', 'diesel', 'posto', 'shell', 'ipiranga', 'petrobras', 'ale', 'br dte'], categoryPatterns: ['combustivel', 'automovel', 'veiculo', 'transporte'] },
+  { words: ['uber', '99', '99pop', '99app', 'cabify', 'indrive', 'taxi', 'onibus', 'metro', 'trem', 'brt', 'vlt', 'passagem'], categoryPatterns: ['aplicativos de transporte', 'transporte', 'mobilidade', 'taxi', 'deslocamento'] },
+  { words: ['gasolina', 'etanol', 'combustivel', 'diesel', 'posto', 'autoposto', 'shell', 'ipiranga', 'petrobras', 'ale', 'br dte'], categoryPatterns: ['combustivel', 'automovel', 'veiculo', 'transporte'] },
   { words: ['pedagio', 'sem parar', 'veloe', 'movemais', 'estacionamento', 'autopark', 'estapar'], categoryPatterns: ['estacionamento', 'transporte', 'automovel'] },
-  { words: ['ifood', 'rappi', 'delivery', 'mcdonalds', 'burguer', 'burger', 'hamburguer', 'pizza', 'dominos', 'habib', 'lanche', 'almoco', 'jantar', 'restaurante', 'refeicao', 'cafe', 'padaria', 'pastel', 'sushi', 'comida', 'bob', 'acougue'], categoryPatterns: ['alimentacao', 'refeicao', 'restaurante', 'comida', 'lanche'] },
-  { words: ['supermercado', 'mercado', 'carrefour', 'extra', 'atacadao', 'assai', 'hortifruti', 'feira', 'sacolao', 'pao de acucar', 'bistek', 'walmart', 'barbosa'], categoryPatterns: ['supermercado', 'mercado', 'alimentacao', 'compras'] },
+  { words: ['ifood', 'rappi', 'delivery', 'mcdonalds', 'burguer', 'burger', 'hamburguer', 'pizza', 'dominos', 'habib', 'lanche', 'almoco', 'jantar', 'restaurante', 'refeicao', 'cafe', 'cafeteria', 'padaria', 'pastel', 'sushi', 'comida', 'bob', 'acougue'], categoryPatterns: ['alimentacao', 'refeicao', 'restaurante', 'comida', 'lanche'] },
+  { words: ['supermercado', 'hipermercado', 'mercado', 'carrefour', 'extra', 'atacadao', 'assai', 'hortifruti', 'feira', 'sacolao', 'pao de acucar', 'bistek', 'walmart', 'barbosa'], categoryPatterns: ['supermercado', 'mercado', 'alimentacao', 'compras'] },
   { words: ['netflix', 'spotify', 'amazon prime', 'disney', 'hbo', 'max', 'globoplay', 'deezer', 'paramount', 'youtube premium', 'crunchyroll', 'mubi', 'apple tv'], categoryPatterns: ['streaming', 'entretenimento', 'lazer', 'assinatura'] },
   { words: ['farmacia', 'drogasil', 'drogaraia', 'drogao', 'droga', 'ultrafarma', 'sempre', 'medicar', 'remedio', 'medicamento', 'higiene', 'receita'], categoryPatterns: ['farmacia e higiene', 'saude', 'farmacia', 'medicamento'] },
   { words: ['medico', 'clinica', 'hospital', 'consulta', 'exame', 'laboratorio', 'unimed', 'amil', 'bradesco saude', 'hapvida', 'plano de saude', 'dentista'], categoryPatterns: ['saude', 'medico', 'plano de saude'] },
@@ -52,17 +52,76 @@ export const KEYWORD_RULES: Array<{ words: string[]; categoryPatterns: string[] 
   { words: ['seguro', 'seguros', 'corretor', 'porto seguro', 'bradesco seguro', 'sulamerica', 'mapfre', 'tokio'], categoryPatterns: ['seguro', 'seguros', 'protecao'] },
 ]
 
-export function keywordFallback(description: string, categories: CategoryOption[]): string | null {
+// Palavras-chave com pelo menos esse tamanho também casam como início de
+// palavra ("droga" → "drogaria", "pizza" → "pizzaria"). As mais curtas só
+// casam como palavra inteira (ou com "s" de plural): antes a comparação era por
+// trecho, e "ceb" casava dentro de "recebimento", "oi" dentro de "boleto"…
+export const MIN_PREFIX_KEYWORD_LENGTH = 5
+
+// Palavras longas que, como prefixo, casariam com termos comuns de extrato
+// sem relação com a categoria ("extra" → "extrato").
+const WHOLE_WORD_ONLY_KEYWORDS = new Set(['extra'])
+
+/**
+ * A palavra-chave (já pode ter várias palavras, ex.: "pao de acucar") aparece
+ * na descrição normalizada como sequência de palavras inteiras. A última
+ * palavra aceita plural com "s" e, se tiver MIN_PREFIX_KEYWORD_LENGTH letras
+ * ou mais, também casa como início de palavra.
+ */
+export function keywordMatches(normalizedDescription: string, keyword: string): boolean {
+  const k = normalizeDescription(keyword)
+  if (!k || !normalizedDescription) return false
+  const tokens = normalizedDescription.split(' ')
+  const parts = k.split(' ')
+  const allowPrefix = k.length >= MIN_PREFIX_KEYWORD_LENGTH && !WHOLE_WORD_ONLY_KEYWORDS.has(k)
+  for (let i = 0; i + parts.length <= tokens.length; i++) {
+    let ok = true
+    for (let j = 0; j < parts.length && ok; j++) {
+      const t = tokens[i + j]
+      const p = parts[j]
+      const last = j === parts.length - 1
+      ok = t === p || (last && (t === `${p}s` || (allowPrefix && t.startsWith(p))))
+    }
+    if (ok) return true
+  }
+  return false
+}
+
+/**
+ * Sugestão por palavras-chave embutidas. Com `type`, só devolve categorias
+ * desse tipo (um crédito nunca recebe categoria de despesa e vice-versa).
+ */
+export function keywordFallback(
+  description: string,
+  categories: CategoryOption[],
+  type?: 'income' | 'expense',
+): string | null {
   const normalized = normalizeDescription(description)
+  const pool = type ? categories.filter((c) => c.type === type) : categories
   for (const { words, categoryPatterns } of KEYWORD_RULES) {
-    const matched = words.some((w) => normalized.includes(w))
+    const matched = words.some((w) => keywordMatches(normalized, w))
     if (!matched) continue
     for (const pattern of categoryPatterns) {
-      const cat = categories.find((c) => normalizeDescription(c.name).includes(pattern))
+      const cat = pool.find((c) => normalizeDescription(c.name).includes(pattern))
       if (cat) return cat.id
     }
   }
   return null
+}
+
+// ─── Descrições sem categoria automática ──────────────────────────────────────
+
+// Lançamentos que o usuário sempre categoriza na mão (nenhum passo da
+// sugestão — regra, histórico, nome, IA ou palavra-chave — propõe categoria).
+// Integralização de capital em cooperativa (Sicredi etc.) é aporte na cota do
+// associado: depende de como cada um controla isso.
+const NO_AUTO_CATEGORY_PATTERNS: RegExp[] = [
+  /\bintegralizacao de capital\b/,
+]
+
+export function isNoAutoCategory(description: string): boolean {
+  const n = normalizeDescription(description ?? '')
+  return NO_AUTO_CATEGORY_PATTERNS.some((re) => re.test(n))
 }
 
 // ─── Correspondência direta com nome de categoria/subcategoria cadastrada ─────
@@ -86,11 +145,13 @@ export const MIN_CATEGORY_NAME_MATCH_LENGTH = 4
 export function matchCategoryNameInDescription(
   description: string,
   categories: CategoryOption[],
+  type?: 'income' | 'expense',
 ): CategoryOption | null {
   const normalizedDesc = normalizeDescription(description)
   if (!normalizedDesc) return null
 
   const candidates = categories
+    .filter((c) => !type || c.type === type)
     .map((c) => ({ category: c, normalizedName: normalizeDescription(c.name) }))
     .filter(({ normalizedName }) => normalizedName.length >= MIN_CATEGORY_NAME_MATCH_LENGTH)
     .filter(({ normalizedName }) => normalizedDesc.includes(normalizedName))

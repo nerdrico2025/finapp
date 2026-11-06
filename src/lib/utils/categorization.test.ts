@@ -4,6 +4,8 @@ import {
   keywordFallback,
   matchCategoryNameInDescription,
   coreFingerprint,
+  keywordMatches,
+  isNoAutoCategory,
   MIN_CATEGORY_NAME_MATCH_LENGTH,
   MIN_FINGERPRINT_LENGTH,
   type CategoryOption,
@@ -131,5 +133,96 @@ describe('coreFingerprint — reconhece a mesma contraparte recorrente apesar do
     const fp = coreFingerprint('Pix 04829371')
     expect(fp).toBe('pix')
     expect(fp.length).toBeLessThan(MIN_FINGERPRINT_LENGTH)
+  })
+})
+
+// ─── Comparação por palavra e filtro por tipo ─────────────────────────────────
+
+describe('keywordFallback — palavra inteira (bug "ceb" em "recebimento")', () => {
+  const CATS: CategoryOption[] = [
+    ...DEFAULT_CATEGORIES,
+    { id: 'energia', name: 'Energia', type: 'expense', icon: null, parent_id: null },
+    { id: 'combustivel', name: 'Combustível', type: 'expense', icon: null, parent_id: null },
+    { id: 'educacao', name: 'Educação', type: 'expense', icon: null, parent_id: null },
+    { id: 'viagem', name: 'Viagem', type: 'expense', icon: null, parent_id: null },
+    { id: 'farmacia', name: 'Farmácia e higiene', type: 'expense', icon: null, parent_id: null },
+    { id: 'beleza', name: 'Cuidados pessoais', type: 'expense', icon: null, parent_id: null },
+    { id: 'gas', name: 'Gás', type: 'expense', icon: null, parent_id: null },
+    { id: 'telefonia', name: 'Telefonia e internet', type: 'expense', icon: null, parent_id: null },
+    { id: 'salario', name: 'Salário', type: 'income', icon: null, parent_id: null },
+  ]
+
+  it('"RECEBIMENTO PIX - ..." não vai para Energia', () => {
+    expect(keywordFallback('RECEBIMENTO PIX - 11122233344 Joao Titular Exemplo', CATS)).toBeNull()
+    expect(keywordFallback('CEB DISTRIBUICAO', CATS)).toBe('energia')
+  })
+
+  it.each([
+    ['PIX - 19912345678 FULANO', 'transporte'],      // "99" dentro de CPF
+    ['UBERLANDIA COMERCIO', 'transporte'],           // "uber"
+    ['PAGAMENTO IMPOSTO MUNICIPAL', 'combustivel'],  // "posto" dentro de "imposto"
+    ['PIX PAULA SOUZA', 'educacao'],                 // "aula"
+    ['PIX ALESSANDRA', 'combustivel'],               // "ale"
+    ['ESPACO KIDS', 'beleza'],                       // "spa"
+    ['GASTOS DIVERSOS', 'gas'],                      // "gas"
+    ['PAGTO ULTIMO MES', 'telefonia'],               // "tim"
+    ['EXTRATO MENSAL', 'alimentacao'],               // "extra"
+  ])('%j não casa por trecho de palavra (antes ia para %s)', (desc) => {
+    expect(keywordFallback(desc, CATS)).toBeNull()
+  })
+
+  it.each([
+    ['UBER *TRIP', 'transporte'],
+    ['99 TAXI', 'transporte'],
+    ['99POP VIAGEM', 'transporte'],
+    ['DROGARIA SAO PAULO', 'farmacia'],
+    ['PIZZARIA DO ZE', 'alimentacao'],
+    ['AUTO POSTO SHELL', 'combustivel'],
+    ['AUTOPOSTO CENTRAL', 'combustivel'],
+    ['SUPERMERCADOS BH', 'alimentacao'],
+    ['HIPERMERCADO BOM', 'alimentacao'],
+    ['CAFETERIA CENTRAL', 'alimentacao'],
+    ['SUPERMERCADO EXTRA', 'alimentacao'],
+    ['PAO DE ACUCAR 123', 'alimentacao'],
+    ['VIVO FIBRA', 'telefonia'],
+    ['BAR E RESTAURANTE EXEMPLO LTDA', 'alimentacao'],
+  ])('%j continua indo para %s', (desc, expected) => {
+    expect(keywordFallback(desc, CATS)).toBe(expected)
+  })
+
+  it('com tipo: um crédito não recebe categoria de despesa', () => {
+    expect(keywordFallback('RECEBIMENTO PIX - POUSADA EXEMPLO LTDA ME', CATS)).toBe('viagem')
+    expect(keywordFallback('RECEBIMENTO PIX - POUSADA EXEMPLO LTDA ME', CATS, 'income')).toBeNull()
+    expect(keywordFallback('SALARIO EMPRESA X', CATS, 'income')).toBe('salario')
+    expect(keywordFallback('SALARIO EMPRESA X', CATS, 'expense')).toBeNull()
+    expect(keywordFallback('UBER *TRIP', CATS, 'expense')).toBe('transporte')
+  })
+
+  it('matchCategoryNameInDescription respeita o tipo', () => {
+    expect(matchCategoryNameInDescription('Transporte — reembolso', DEFAULT_CATEGORIES, 'income')).toBeNull()
+    expect(matchCategoryNameInDescription('Transporte — app', DEFAULT_CATEGORIES, 'expense')?.id).toBe('transporte')
+  })
+})
+
+describe('keywordMatches', () => {
+  it('palavra inteira, plural com "s", prefixo só a partir de 5 letras, várias palavras em sequência', () => {
+    expect(keywordMatches('recebimento pix', 'ceb')).toBe(false)
+    expect(keywordMatches('ceb distribuicao', 'ceb')).toBe(true)
+    expect(keywordMatches('lojas americanas', 'loja')).toBe(true)
+    expect(keywordMatches('cafeteria', 'cafe')).toBe(false)
+    expect(keywordMatches('drogaria', 'droga')).toBe(true)
+    expect(keywordMatches('extrato', 'extra')).toBe(false)
+    expect(keywordMatches('pao de acucar', 'pao de acucar')).toBe(true)
+    expect(keywordMatches('pao de queijo', 'pao de acucar')).toBe(false)
+    expect(keywordMatches('supergasbras', 'supergasbrás')).toBe(true)
+  })
+})
+
+describe('isNoAutoCategory', () => {
+  it('integralização de capital não recebe categoria automática', () => {
+    expect(isNoAutoCategory('INTEGRALIZACAO DE CAPITAL POR DEBITO EM CONTA')).toBe(true)
+    expect(isNoAutoCategory('Integralização de capital')).toBe(true)
+    expect(isNoAutoCategory('PAGAMENTO PIX - CAPITAL')).toBe(false)
+    expect(keywordFallback('INTEGRALIZACAO DE CAPITAL POR DEBITO EM CONTA', DEFAULT_CATEGORIES)).toBeNull()
   })
 })

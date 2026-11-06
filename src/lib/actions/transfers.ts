@@ -81,6 +81,8 @@ export interface TransferPreviewInput {
   description: string
   amount: number // com sinal
   bankTransactionId?: string | null
+  /** Sal do import_hash (só perfil Sicredi) — o mesmo usado em importTransactions. */
+  hashSalt?: string | null
 }
 
 /**
@@ -113,7 +115,7 @@ export async function analyzeImportTransfers(
       date: r.date,
       description: r.description,
       amount: r.amount,
-      importHash: r.date ? generateImportHash(userId, Math.abs(r.amount), r.date, r.description) : null,
+      importHash: r.date ? generateImportHash(userId, Math.abs(r.amount), r.date, r.description, r.hashSalt) : null,
       bankTransactionId: r.bankTransactionId ?? null,
     })),
     accounts,

@@ -61,8 +61,10 @@ export interface CSVRow {
   account_id: string
   category_id?: string | null
   category_source?: CategorySource | null
-  /** FITID do OFX/QFX — ver findKnownBankTransactionIds. */
+  /** Id do banco (FITID do OFX/QFX, "sicredi:…") — ver findKnownBankTransactionIds. */
   bank_transaction_id?: string | null
+  /** Sal do import_hash (só perfil Sicredi) — ver generateImportHash. */
+  hash_salt?: string | null
   /** Linha marcada como transferência na prévia (ver transfer-detection). */
   transfer?: ImportTransferAction | null
 }
@@ -756,7 +758,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         }
       }
 
-      const importHash = generateImportHash(user.id, amount, row.date, row.description)
+      const importHash = generateImportHash(user.id, amount, row.date, row.description, row.hash_salt)
 
       // Transferências são resolvidas ANTES da deduplicação por hash: a linha
       // absorvida por uma perna já registrada não é duplicata. A checagem de

@@ -16,7 +16,7 @@ const FEATURES = [
   {
     Icon: Upload,
     title: 'Importação de extratos',
-    description: 'CSV, XLSX, OFX e PDF. Suporte especial para BTG, Nubank, Itaú e mais.',
+    description: 'CSV, XLSX, OFX e PDF. Suporte especial para BTG, Nubank, Itaú, Sicredi e mais.',
   },
   {
     Icon: Target,
@@ -67,7 +67,7 @@ const PRO_PJ_FEATURES = [
   'Gestão multi-entidade',
 ]
 
-const BANKS = ['BTG Pactual', 'Nubank', 'Itaú', 'Bradesco', 'Inter', 'XP']
+const BANKS = ['BTG Pactual', 'Nubank', 'Itaú', 'Sicredi', 'Bradesco', 'Inter', 'XP']
 
 export default async function LandingPage() {
   const supabase = await createClient()

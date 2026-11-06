@@ -6,6 +6,7 @@ import {
   normalizeDescription,
   keywordFallback,
   matchCategoryNameInDescription,
+  isNoAutoCategory,
   coreFingerprint,
   MIN_FINGERPRINT_LENGTH,
   type CategoryOption,
@@ -339,6 +340,11 @@ async function callOpenRouter(
  *      pro fallback de palavra-chave.
  *   5. Sem sugestão nenhuma — confidence 'low', category_id null.
  *
+ * Com `type` (receita/despesa da linha), os passos 3 e 4 só sugerem categorias
+ * desse tipo; uma resposta da IA de tipo incompatível é descartada e cai no
+ * fallback de palavras-chave. Descrições de isNoAutoCategory() nunca recebem
+ * sugestão.
+ *
  * Nunca lança erro — categorização é sugestão, não bloqueio.
  */
 export async function suggestCategory(
@@ -346,6 +352,7 @@ export async function suggestCategory(
   entityId: string | null,
   amount?: number,
   categories?: CategoryOption[],
+  type?: 'income' | 'expense',
 ): Promise<CategorySuggestion> {
   const fallback: CategorySuggestion = {
     category_id: null,
@@ -354,6 +361,8 @@ export async function suggestCategory(
     confidence: 'low',
     source: 'ai',
   }
+
+  if (isNoAutoCategory(description)) return fallback
 
   try {
     const supabase = await createClient()
@@ -408,7 +417,7 @@ export async function suggestCategory(
     }
 
     // ── PASSO 3: correspondência direta com nome de categoria cadastrada ────
-    const nameMatch = matchCategoryNameInDescription(description, catOptions)
+    const nameMatch = matchCategoryNameInDescription(description, catOptions, type)
     if (nameMatch) {
       return {
         category_id: nameMatch.id,
@@ -425,8 +434,13 @@ export async function suggestCategory(
     const recentTx = aiEnabled ? await fetchRecentTransactions(supabase, user.id, entityId) : []
     const aiResult = await callOpenRouter(description, amount, catOptions, recentTx)
 
-    if (!aiResult.category_id) {
-      const kwCatId = keywordFallback(description, catOptions)
+    // Resposta da IA de tipo incompatível com a linha (ex.: categoria de
+    // despesa para um crédito) é tratada como "sem resposta".
+    const aiCategory = aiResult.category_id ? catOptions.find((c) => c.id === aiResult.category_id) : undefined
+    const aiIncompatible = !!type && !!aiCategory && aiCategory.type !== type
+
+    if (!aiResult.category_id || aiIncompatible) {
+      const kwCatId = keywordFallback(description, catOptions, type)
       if (kwCatId) {
         const kwCat = catOptions.find((c) => c.id === kwCatId)
         return {
@@ -441,7 +455,7 @@ export async function suggestCategory(
     }
 
     // Valida que o category_id devolvido realmente existe na lista
-    const matched = catOptions.find((c) => c.id === aiResult.category_id)
+    const matched = aiCategory
 
     return {
       category_id: matched?.id ?? null,
