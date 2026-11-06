@@ -18,17 +18,13 @@ import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
 import { CategorySelect } from '@/components/ui/CategorySelect'
 import type { Account, Category } from '@/types'
+import {
+  detectColumns, isMappingValid, csvToRaw, applyMapping, type ColumnMapping,
+} from '@/lib/import/csv'
+import { detectSicrediCsv, parseSicrediCsv, checkBalanceChain, type BalanceChainResult } from '@/lib/import/profiles/sicredi'
+import { collectBankIds, dropKnownBankIds } from '@/lib/import/known-ids'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ColumnMapping {
-  dateIdx: number
-  descIdx: number
-  desc2Idx: number
-  amountIdx: number
-  creditIdx: number
-  debitIdx: number
-}
 
 interface EditableRow {
   date: string
@@ -44,9 +40,13 @@ interface EditableRow {
   checked: boolean
   duplicate?: DuplicateMatch | null
   error?: string
+  /** Aviso não bloqueante (ex.: sinal e tipo divergentes) — linha vem desmarcada. */
+  warning?: string
   raw: string
-  /** FITID do OFX/QFX — camada 1 de deduplicação, ver findKnownBankTransactionIds. */
+  /** Id do banco (FITID do OFX, "sicredi:…") — camada 1 de deduplicação, ver findKnownBankTransactionIds. */
   bankTransactionId?: string | null
+  /** Sal do import_hash — só o perfil Sicredi preenche (ver generateImportHash). */
+  hashSalt?: string | null
   /** Transferência entre contas próprias (detectada ou escolhida na prévia). */
   transfer?: RowTransferState | null
 }
@@ -112,10 +112,12 @@ function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
       categoryId: null,
       source: null,
       confidence: null,
-      checked: !r.error && !isBalanceRow,
+      checked: !r.error && !r.warning && !isBalanceRow,
       error: r.error,
+      warning: r.warning,
       raw: r.raw ?? '',
       bankTransactionId: r.bankTransactionId ?? null,
+      hashSalt: r.hashSalt ?? null,
     }
   })
 }
@@ -125,43 +127,6 @@ function isSelectable(r: EditableRow): boolean {
   return !r.error && !isAbsorbed(r.transfer)
 }
 
-// ─── Utilities ────────────────────────────────────────────────────────────────
-
-function parseAmount(raw: string): number {
-  const s = (raw ?? '').trim()
-  if (!s) return 0
-  const commaIdx = s.lastIndexOf(',')
-  const dotIdx = s.lastIndexOf('.')
-  if (commaIdx !== -1 && dotIdx !== -1) {
-    // Both separators: whichever comes last is the decimal separator
-    if (dotIdx > commaIdx) {
-      // US format: 1,913.44 — remove commas, dot is decimal
-      return parseFloat(s.replace(/,/g, '')) || 0
-    } else {
-      // BR format: 1.913,44 — remove dots, comma is decimal
-      return parseFloat(s.replace(/\./g, '').replace(',', '.')) || 0
-    }
-  }
-  if (commaIdx !== -1) return parseFloat(s.replace(',', '.')) || 0
-  return parseFloat(s) || 0
-}
-
-function normalizeDate(raw: string): string {
-  const s = (raw ?? '').trim().split(/[\sT]/)[0]
-  if (!s || s.toLowerCase() === 'nan') return ''
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
-  if (/^\d{2}\/\d{2}\/\d{4}$/.test(s)) {
-    const [d, m, y] = s.split('/'); return `${y}-${m}-${d}`
-  }
-  if (/^\d{2}\/\d{2}\/\d{2}$/.test(s)) {
-    const [d, m, y] = s.split('/'); return `20${y}-${m}-${d}`
-  }
-  if (/^\d{2}-\d{2}-\d{4}$/.test(s)) {
-    const [d, m, y] = s.split('-'); return `${y}-${m}-${d}`
-  }
-  return ''
-}
-
 function detectFormat(name: string): FileFormat | null {
   const ext = name.toLowerCase().split('.').pop() ?? ''
   if (ext === 'csv' || ext === 'txt') return 'csv'
@@ -169,103 +134,6 @@ function detectFormat(name: string): FileFormat | null {
   if (ext === 'ofx' || ext === 'qfx') return 'ofx'
   if (ext === 'pdf') return 'pdf'
   return null
-}
-
-// ─── Column detection ─────────────────────────────────────────────────────────
-
-function detectColumns(headers: string[]): ColumnMapping {
-  const h = headers.map(c => String(c ?? '').toLowerCase().replace(/['"]/g, '').trim())
-
-  const dateIdx = h.findIndex(c =>
-    c === 'data' || c === 'date' || c === 'dt' || c === 'data lançamento' || c === 'data lancamento' ||
-    c === 'data e hora' || c === 'data/hora' ||
-    (c.includes('data') && !c.includes('cadastro') && !c.includes('criação') && !c.includes('criacao') && !c.includes('vencimento'))
-  )
-
-  const descIdx = h.findIndex(c =>
-    c.includes('descri') || c.includes('histor') || c.includes('memo') ||
-    c.includes('lancamento') || c.includes('lançamento') || c.includes('estabele') ||
-    c.includes('detalhe') || c.includes('narrat') || c.includes('complemento') ||
-    c === 'nome' || c === 'favorecido' || c === 'pagador'
-  )
-
-  const desc2Idx = h.findIndex((c, i) =>
-    i !== descIdx && (c === 'transação' || c === 'transacao' || c.includes('transaç') || c === 'categoria' || c === 'tipo')
-  )
-
-  return {
-    dateIdx,
-    descIdx,
-    desc2Idx,
-    amountIdx: h.findIndex(c =>
-      c === 'valor' || c === 'amount' || c === 'value' || c === 'valor (r$)' ||
-      c.includes('valor') || c.includes('amount') || c.includes('montante')
-    ),
-    creditIdx: h.findIndex(c =>
-      c.includes('cred') || c.includes('entrada') || c.includes('receita') || c === 'c'
-    ),
-    debitIdx: h.findIndex(c =>
-      c.includes('déb') || c.includes('deb') || c.includes('saída') || c.includes('saida') ||
-      c.includes('despesa') || c === 'd'
-    ),
-  }
-}
-
-function isMappingValid(m: ColumnMapping): boolean {
-  return m.dateIdx >= 0 && m.descIdx >= 0 && (m.amountIdx >= 0 || m.creditIdx >= 0 || m.debitIdx >= 0)
-}
-
-// ─── CSV/XLSX raw parsing ─────────────────────────────────────────────────────
-
-function splitLine(line: string, delimiter: string): string[] {
-  const result: string[] = []
-  let field = ''
-  let inQuote = false
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i]
-    if (ch === '"') { inQuote = !inQuote }
-    else if (ch === delimiter && !inQuote) { result.push(field.trim()); field = '' }
-    else { field += ch }
-  }
-  result.push(field.trim())
-  return result
-}
-
-function csvToRaw(content: string): { headers: string[]; rawRows: string[][] } {
-  const lines = content.split('\n').map(l => l.replace(/\r$/, '')).filter(Boolean)
-  if (lines.length < 2) return { headers: [], rawRows: [] }
-  const delimiter = lines[0].includes(';') ? ';' : ','
-  const headers = splitLine(lines[0], delimiter)
-  const rawRows = lines.slice(1).map(l => splitLine(l, delimiter))
-  return { headers, rawRows }
-}
-
-function applyMapping(headers: string[], rawRows: string[][], mapping: ColumnMapping): ParsedRow[] {
-  const { dateIdx, descIdx, desc2Idx, amountIdx, creditIdx, debitIdx } = mapping
-  return rawRows.flatMap((parts, i) => {
-    try {
-      const rawDate = parts[dateIdx] ?? ''
-      if (!rawDate || rawDate.toLowerCase() === 'nan') return []
-      const date = normalizeDate(rawDate)
-      if (!date) {
-        return [{ date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: `Data inválida: "${rawDate || '(vazio)'}"` }]
-      }
-      const primary = desc2Idx >= 0 ? (parts[desc2Idx] ?? '').trim() : ''
-      const secondary = descIdx >= 0 ? (parts[descIdx] ?? '').trim() : ''
-      const description = [primary, secondary].filter(Boolean).join(' — ') || `Transação ${i + 1}`
-      let amount = 0
-      if (amountIdx >= 0) {
-        amount = parseAmount(parts[amountIdx] ?? '0')
-      } else {
-        const credit = parseAmount(parts[creditIdx] ?? '0')
-        const debit = parseAmount(parts[debitIdx] ?? '0')
-        amount = credit > 0 ? credit : -Math.abs(debit)
-      }
-      return [{ date, description, amount, type: amount >= 0 ? 'income' as const : 'expense' as const, raw: parts.join(' ') }]
-    } catch {
-      return [{ date: '', description: parts.join(' '), amount: 0, type: 'expense' as const, raw: parts.join(' '), error: 'Linha inválida' }]
-    }
-  })
 }
 
 // ─── OFX parser ───────────────────────────────────────────────────────────────
@@ -354,6 +222,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [checkingTransfers, setCheckingTransfers] = useState(false)
   const [onlyTransfers, setOnlyTransfers] = useState(false)
   const [autoSkippedCount, setAutoSkippedCount] = useState(0)
+  /** Conferência da coluna Saldo (só perfil Sicredi) — informativa, não grava nada. */
+  const [balanceCheck, setBalanceCheck] = useState<BalanceChainResult | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
   const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
@@ -416,6 +286,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setEditableRows([])
     setResult(null)
     setAutoSkippedCount(0)
+    setBalanceCheck(null)
     setStep('parsing')
 
     try {
@@ -432,15 +303,19 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const { headers, rawRows: raw } = csvToRaw(text)
         if (!headers.length) { setParseError('Arquivo CSV vazio ou inválido.'); setStep('idle'); return }
         console.log('[CSV] Headers detectados:', headers)
+        if (detectSicrediCsv(headers)) {
+          const rows = parseSicrediCsv(headers, raw)
+          if (!rows.length) { setParseError('Nenhuma transação encontrada no extrato do Sicredi.'); setStep('idle'); return }
+          // Sobre o arquivo inteiro, antes da Camada 1 tirar linhas já importadas.
+          setBalanceCheck(checkBalanceChain(rows))
+          await showPreview(rows)
+          return
+        }
         const detected = detectColumns(headers)
         const normalizedRaw = raw.map(r => headers.map((_, i) => r[i] ?? ''))
         setRawHeaders(headers); setRawRows(normalizedRaw); setColMap(detected)
         if (isMappingValid(detected)) {
-          const parsed = parsedToEditable(applyMapping(headers, normalizedRaw, detected))
-          setEditableRows(parsed)
-          setStep('preview')
-          runAiSuggestions(parsed)
-          runImportChecks(parsed)
+          await showPreview(applyMapping(headers, normalizedRaw, detected))
         } else { setStep('mapping') }
       }
 
@@ -475,11 +350,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
         setRawHeaders(headers); setRawRows(raw); setColMap(detected)
         if (isMappingValid(detected)) {
-          const parsed = parsedToEditable(applyMapping(headers, raw, detected))
-          setEditableRows(parsed)
-          setStep('preview')
-          runAiSuggestions(parsed)
-          runImportChecks(parsed)
+          await showPreview(applyMapping(headers, raw, detected))
         } else {
           console.log('[XLSX] Mapeamento automático falhou. Headers:', headers)
           setStep('mapping')
@@ -490,32 +361,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const text = await file.text()
         const rawParsed = parseOFX(text)
         if (!rawParsed.length) { setParseError('Nenhuma transação encontrada no arquivo OFX.'); setStep('idle'); return }
-
-        // Camada 1 — FITID: transações que o banco já identificou como as
-        // mesmas de uma importação anterior são puladas direto, sem nem
-        // aparecer na pré-visualização (alta confiança, não precisa de
-        // confirmação do usuário).
-        const idsToCheck = Array.from(new Set(
-          rawParsed.map(r => r.bankTransactionId).filter((id): id is string => !!id)
-        ))
-        let knownIds: Set<string> = new Set()
-        if (idsToCheck.length > 0) {
-          try { knownIds = new Set(await findKnownBankTransactionIds(idsToCheck)) } catch { /* segue sem essa camada se a checagem falhar */ }
-        }
-        const filteredParsed = rawParsed.filter(r => !(r.bankTransactionId && knownIds.has(r.bankTransactionId)))
-        const skippedKnown = rawParsed.length - filteredParsed.length
-
-        if (!filteredParsed.length) {
-          setParseError(`Todas as ${skippedKnown} transações do arquivo já haviam sido importadas anteriormente (mesmo identificador do banco).`)
-          setStep('idle'); return
-        }
-
-        setAutoSkippedCount(skippedKnown)
-        const parsed = parsedToEditable(filteredParsed)
-        setEditableRows(parsed)
-        setStep('preview')
-        runAiSuggestions(parsed)
-        runImportChecks(parsed)
+        await showPreview(rawParsed)
       }
 
       else if (fmt === 'pdf') {
@@ -526,11 +372,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           setParseError(rawParsed[0]?.error ?? 'Nenhuma transação detectada no PDF.')
           setStep('idle'); return
         }
-        const parsed = parsedToEditable(rawParsed)
-        setEditableRows(parsed)
-        setStep('preview')
-        runAiSuggestions(parsed)
-          runImportChecks(parsed)
+        await showPreview(rawParsed)
       }
     } catch (err) {
       setParseError(`Erro ao processar o arquivo: ${err instanceof Error ? err.message : 'erro desconhecido'}`)
@@ -539,15 +381,39 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   }
 
   function applyManualMapping() {
-    const parsed = parsedToEditable(applyMapping(rawHeaders, rawRows, colMap))
+    showPreview(applyMapping(rawHeaders, rawRows, colMap))
+  }
+
+  /**
+   * Leva as linhas lidas (qualquer formato) para a prévia. Camada 1 — id do
+   * banco (FITID do OFX, "sicredi:…"): transações que o banco já identificou
+   * como as mesmas de uma importação anterior são puladas direto, sem nem
+   * aparecer na pré-visualização (alta confiança, não precisa de confirmação
+   * do usuário). Formatos sem id passam direto, sem consulta.
+   */
+  async function showPreview(rawParsed: ParsedRow[]) {
+    const idsToCheck = collectBankIds(rawParsed)
+    let knownIds: Set<string> = new Set()
+    if (idsToCheck.length > 0) {
+      try { knownIds = new Set(await findKnownBankTransactionIds(idsToCheck)) } catch { /* segue sem essa camada se a checagem falhar */ }
+    }
+    const { rows: filteredParsed, skipped: skippedKnown } = dropKnownBankIds(rawParsed, knownIds)
+
+    if (skippedKnown > 0 && !filteredParsed.length) {
+      setParseError(`Todas as ${skippedKnown} transações do arquivo já haviam sido importadas anteriormente (mesmo identificador do banco).`)
+      setStep('idle'); return
+    }
+
+    setAutoSkippedCount(skippedKnown)
+    const parsed = parsedToEditable(filteredParsed)
     setEditableRows(parsed)
     setStep('preview')
     runAiSuggestions(parsed)
-          runImportChecks(parsed)
+    runImportChecks(parsed)
   }
 
   async function runAiSuggestions(rows: EditableRow[]) {
-    const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && r.checked)
+    const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && (r.checked || !!r.warning))
     if (toSuggest.length === 0) return
     setSuggestingAi(true)
     try {
@@ -557,7 +423,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const batch = toSuggest.slice(b, b + BATCH)
         const results = await Promise.all(
           batch.map(({ i: idx, r }) =>
-            suggestCategory(r.description, null, undefined, cats).then(s => ({ idx, s })).catch(() => null)
+            suggestCategory(r.description, null, Math.abs(r.amount), cats, r.type).then(s => ({ idx, s })).catch(() => null)
           )
         )
         setEditableRows(prev => {
@@ -596,6 +462,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
           description: r.description,
           amount: r.type === 'expense' ? -Math.abs(r.amount) : Math.abs(r.amount),
           bankTransactionId: r.bankTransactionId ?? null,
+          hashSalt: r.hashSalt ?? null,
         })),
         accountId,
       )
@@ -693,6 +560,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         category_id: transfer ? null : (r.categoryId ?? null),
         category_source: !transfer && r.categoryId ? r.source : null,
         bank_transaction_id: r.bankTransactionId ?? null,
+        hash_salt: r.hashSalt ?? null,
         transfer,
       }
     })
@@ -720,6 +588,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setStep('idle'); setFormat(null); setFileName(''); setParseError(null)
     setEditableRows([]); setRawHeaders([]); setRawRows([]); setResult(null)
     setAutoSkippedCount(0)
+    setBalanceCheck(null)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -997,6 +866,21 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             </div>
           )}
 
+          {balanceCheck && (balanceCheck.ok ? (
+            <p className="mb-3 text-xs text-gray-500">
+              Saldo do extrato fecha: abertura {formatCurrency(balanceCheck.openingBalance ?? 0)} → final {formatCurrency(balanceCheck.closingBalance ?? 0)}.
+              {' '}Confira se o saldo inicial da conta é {formatCurrency(balanceCheck.openingBalance ?? 0)}.
+            </p>
+          ) : (
+            <div className="mb-3 flex items-start gap-2 rounded-lg bg-amber-50 border border-amber-200 px-3 py-2">
+              <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <p className="text-xs text-amber-700">
+                A coluna Saldo não fecha com os valores lidos
+                {balanceCheck.brokenAtIndex !== undefined && ` (linha ${balanceCheck.brokenAtIndex + 2} do arquivo)`}.
+              </p>
+            </div>
+          ))}
+
           {checkingTransfers && (
             <div className="mb-3 flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-200 px-4 py-3">
               <Loader2 className="w-5 h-5 animate-spin text-sky-500 shrink-0" />
@@ -1116,6 +1000,12 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                               title={row.description}
                               className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-emerald-400 focus:outline-none text-gray-800 py-0.5 transition-colors truncate"
                             />
+                            {row.warning && (
+                              <span className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-amber-700" title={row.raw}>
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                {row.warning} — confira antes de marcar
+                              </span>
+                            )}
                             {isAbsorbed(row.transfer) && (
                               <span className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-sky-700">
                                 <ArrowLeftRight className="w-3 h-3 shrink-0" />
