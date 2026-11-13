@@ -9,8 +9,16 @@ import {
   isNoAutoCategory,
   coreFingerprint,
   MIN_FINGERPRINT_LENGTH,
+  classifyAiHttpFailure,
+  classifyAiException,
+  chooseRule,
+  allowedCategoryIds,
+  DEFAULT_OPENROUTER_MODEL,
+  type AiFailure,
   type CategoryOption,
+  type StoredRule,
 } from '@/lib/utils/categorization'
+import { getActiveEntityId } from '@/lib/entity'
 
 // Helper: acessa tabelas não incluídas nos tipos gerados ainda
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -26,6 +34,8 @@ export interface CategorySuggestion {
   description_suggestion: string
   confidence: 'high' | 'medium' | 'low'
   source: 'rule' | 'ai' | 'keyword' | 'auto'
+  /** A IA foi consultada e não respondeu (motivo); null quando não falhou ou nem foi consultada. */
+  ai_failure: AiFailure | null
 }
 
 // Número de confirmações consistentes (mesmo padrão → mesma categoria) a
@@ -33,74 +43,89 @@ export interface CategorySuggestion {
 // confirmação manual do usuário. Fácil de ajustar depois.
 const AUTO_APPLY_CONFIRM_THRESHOLD = 3
 
+// ─── Entidade ─────────────────────────────────────────────────────────────────
+
+/**
+ * Entidade usada pela categorização: a informada pelo chamador, se o usuário
+ * for membro dela; senão (ou sem informar) a entidade ativa da sessão.
+ */
+async function resolveEntityId(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  requested: string | null | undefined,
+): Promise<string | null> {
+  if (requested) {
+    const { data } = await table(supabase, 'entity_members')
+      .select('entity_id')
+      .eq('entity_id', requested)
+      .eq('user_id', userId)
+      .not('accepted_at', 'is', null)
+      .maybeSingle()
+    if (data?.entity_id) return data.entity_id as string
+  }
+  return getActiveEntityId(supabase, userId)
+}
+
+/** Contas da entidade (ativas ou não) — o histórico só considera transações delas. */
+async function entityAccountIds(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  entityId: string | null,
+): Promise<string[] | null> {
+  if (!entityId) return null
+  const { data } = await supabase
+    .from('accounts')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('entity_id', entityId)
+  return ((data ?? []) as { id: string }[]).map((a) => a.id)
+}
+
+/** Categorias da entidade + padrões globais — o mesmo filtro de getCategories. */
+async function loadEntityCategories(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  entityId: string | null,
+): Promise<CategoryOption[]> {
+  const orFilter = entityId
+    ? `and(user_id.eq.${userId},entity_id.eq.${entityId}),is_default.eq.true`
+    : `and(user_id.eq.${userId},entity_id.is.null),is_default.eq.true`
+  const { data } = await supabase
+    .from('categories')
+    .select('id, name, type, icon, parent_id')
+    .or(orFilter)
+    .order('name')
+  return (data ?? []) as CategoryOption[]
+}
+
 // ─── PASSO 1 — Regras aprendidas ──────────────────────────────────────────────
 
-async function lookupRule(
+/** Regras do padrão na entidade ativa e as legadas globais (entity_id NULL). */
+async function loadRules(
   supabase: Awaited<ReturnType<typeof createClient>>,
   pattern: string,
   entityId: string | null,
   userId: string,
-): Promise<{ category_id: string; match_count: number; confirm_count: number } | null> {
-  let query = table(supabase, 'category_rules')
-    .select('id, category_id, match_count, confirm_count')
+): Promise<StoredRule[]> {
+  const base = () => table(supabase, 'category_rules')
+    .select('id, entity_id, category_id, match_count, confirm_count')
     .eq('user_id', userId)
     .eq('pattern', pattern)
-
-  if (entityId) {
-    query = query.eq('entity_id', entityId)
-  } else {
-    query = query.is('entity_id', null)
-  }
-
-  const { data } = await query.limit(1).single()
-  if (!data) return null
-  // confirm_count pode não existir ainda (coluna adicionada em migration
-  // separada) — trata como 1 confirmação implícita até a migration rodar.
-  return { category_id: data.category_id, match_count: data.match_count, confirm_count: data.confirm_count ?? 1 }
+  const [own, legacy] = await Promise.all([
+    entityId ? base().eq('entity_id', entityId).limit(1) : Promise.resolve({ data: [] }),
+    base().is('entity_id', null).limit(1),
+  ])
+  return [...((own.data ?? []) as StoredRule[]), ...((legacy.data ?? []) as StoredRule[])]
 }
 
-async function incrementConfirmCount(
+async function updateRule(
   supabase: Awaited<ReturnType<typeof createClient>>,
-  pattern: string,
-  entityId: string | null,
-  userId: string,
+  id: string,
+  patch: Record<string, unknown>,
 ): Promise<void> {
-  let query = table(supabase, 'category_rules')
-    .select('id, confirm_count')
-    .eq('user_id', userId)
-    .eq('pattern', pattern)
-
-  if (entityId) query = query.eq('entity_id', entityId)
-  else query = query.is('entity_id', null)
-
-  const { data } = await query.limit(1).single()
-  if (!data) return
-
   await table(supabase, 'category_rules')
-    .update({ confirm_count: (data.confirm_count ?? 1) + 1, updated_at: new Date().toISOString() })
-    .eq('id', data.id)
-}
-
-async function incrementMatchCount(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  pattern: string,
-  entityId: string | null,
-  userId: string,
-): Promise<void> {
-  let query = table(supabase, 'category_rules')
-    .select('id, match_count')
-    .eq('user_id', userId)
-    .eq('pattern', pattern)
-
-  if (entityId) query = query.eq('entity_id', entityId)
-  else query = query.is('entity_id', null)
-
-  const { data } = await query.limit(1).single()
-  if (!data) return
-
-  await table(supabase, 'category_rules')
-    .update({ match_count: (data.match_count ?? 0) + 1, updated_at: new Date().toISOString() })
-    .eq('id', data.id)
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq('id', id)
 }
 
 // ─── PASSO 2 — Histórico de transações já categorizadas pelo usuário ──────────
@@ -133,11 +158,13 @@ interface HistoryCandidate {
 async function findHistoricalCategoryMatch(
   supabase: Awaited<ReturnType<typeof createClient>>,
   description: string,
-  entityId: string | null,
+  accountIds: string[] | null,
   userId: string,
+  allowed: Set<string>,
 ): Promise<{ category_id: string; category_name: string } | null> {
   const fingerprint = coreFingerprint(description)
   if (fingerprint.length < MIN_FINGERPRINT_LENGTH) return null
+  if (accountIds && accountIds.length === 0) return null
 
   const cutoff = new Date()
   cutoff.setMonth(cutoff.getMonth() - HISTORY_LOOKBACK_MONTHS)
@@ -155,13 +182,13 @@ async function findHistoricalCategoryMatch(
     .order('date', { ascending: false })
     .limit(HISTORY_SCAN_LIMIT)
 
-  if (entityId) query = query.eq('entity_id', entityId)
+  if (accountIds) query = query.in('account_id', accountIds)
 
   const { data } = await query
   if (!data) return null
 
   for (const row of data as unknown as HistoryCandidate[]) {
-    if (row.category_id && coreFingerprint(row.description ?? '') === fingerprint) {
+    if (row.category_id && allowed.has(row.category_id) && coreFingerprint(row.description ?? '') === fingerprint) {
       return { category_id: row.category_id, category_name: row.category?.name ?? '' }
     }
   }
@@ -170,17 +197,18 @@ async function findHistoricalCategoryMatch(
 
 // ─── PASSO 4 — IA via OpenRouter ────────────────────────────────────────────────
 
-// Modelo escolhido: google/gemini-flash-1.5-8b. Critérios (esta chamada roda em
-// onBlur do formulário de transação, então latência baixa é mandatório, e roda
-// em toda transação nova, então custo por chamada importa mais que qualidade de
-// geração de texto longo): é um dos modelos mais rápidos e baratos disponíveis
-// na OpenRouter (~US$0,0375 / 1M tokens de entrada), e para uma classificação
-// curta (escolher 1 de N categorias fixas) sua qualidade é suficiente — não
-// precisamos da capacidade de um modelo maior como gpt-4o-mini para essa tarefa.
-const OPENROUTER_MODEL = 'google/gemini-flash-1.5-8b'
+
+function openRouterModel(): string {
+  return process.env.OPENROUTER_MODEL?.trim() || DEFAULT_OPENROUTER_MODEL
+}
 // Reaproveita a mesma env var já usada em toda a base (callbacks OAuth, Stripe)
 // para identificar a URL pública do app — evita cravar um domínio fixo aqui.
 const OPENROUTER_APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000'
+
+function aiKeyConfigured(): boolean {
+  const apiKey = process.env.OPENROUTER_API_KEY
+  return !!apiKey && apiKey !== 'sk-' && apiKey.length > 10
+}
 
 interface RecentTransaction {
   description: string | null
@@ -191,8 +219,9 @@ interface RecentTransaction {
 async function fetchRecentTransactions(
   supabase: Awaited<ReturnType<typeof createClient>>,
   userId: string,
-  entityId: string | null,
+  accountIds: string[] | null,
 ): Promise<RecentTransaction[]> {
+  if (accountIds && accountIds.length === 0) return []
   let query = supabase
     .from('transactions')
     .select('description, amount, category:categories(name)')
@@ -201,7 +230,7 @@ async function fetchRecentTransactions(
     .order('date', { ascending: false })
     .limit(20)
 
-  if (entityId) query = query.eq('entity_id', entityId)
+  if (accountIds) query = query.in('account_id', accountIds)
 
   const { data } = await query
   return (data ?? []).map((t: unknown) => {
@@ -214,16 +243,26 @@ async function fetchRecentTransactions(
   })
 }
 
+interface AiResult {
+  category_id: string | null
+  description_suggestion: string
+  confidence: 'high' | 'medium' | 'low'
+  /** Preenchido quando a IA não respondeu (não quando respondeu "null"). */
+  failure: AiFailure | null
+}
+
 async function callOpenRouter(
   description: string,
   amount: number | undefined,
   categories: CategoryOption[],
   recentTx: RecentTransaction[],
-): Promise<{ category_id: string | null; description_suggestion: string; confidence: 'high' | 'medium' | 'low' }> {
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey || apiKey === 'sk-') {
-    return { category_id: null, description_suggestion: description, confidence: 'low' }
-  }
+): Promise<AiResult> {
+  const failed = (failure: AiFailure): AiResult =>
+    ({ category_id: null, description_suggestion: description, confidence: 'low', failure })
+
+  if (!aiKeyConfigured()) return failed({ reason: 'no_key' })
+  const apiKey = process.env.OPENROUTER_API_KEY!
+  const model = openRouterModel()
 
   const categoryList = categories
     .map((c) => `- id: "${c.id}" | nome: "${c.name}" | tipo: ${c.type}${c.parent_id ? ' (subcategoria)' : ''}`)
@@ -253,7 +292,7 @@ async function callOpenRouter(
         'X-Title': 'FinApp',
       },
       body: JSON.stringify({
-        model: OPENROUTER_MODEL,
+        model,
         max_tokens: 200,
         temperature: 0.1,
         messages: [
@@ -283,11 +322,10 @@ async function callOpenRouter(
 
     if (!resp.ok) {
       // Não propaga erro pro client (sugestão nunca deve travar o form), mas
-      // registra no log do servidor — sem isso, falhas de billing/API ficam
-      // invisíveis e o app cai silenciosamente pro fallback de palavras-chave.
+      // registra no log do servidor e devolve o motivo para a prévia avisar.
       const errBody = await resp.text().catch(() => '')
-      console.error(`[ai-categorization] OpenRouter respondeu ${resp.status}: ${errBody.slice(0, 300)}`)
-      return { category_id: null, description_suggestion: description, confidence: 'low' }
+      console.error(`[ai-categorization] OpenRouter (${model}) respondeu ${resp.status}: ${errBody.slice(0, 300)}`)
+      return failed(classifyAiHttpFailure(resp.status, errBody))
     }
 
     const json = await resp.json() as { choices?: Array<{ message?: { content?: string } }> }
@@ -309,11 +347,12 @@ async function callOpenRouter(
       category_id: parsed.category_id ?? null,
       description_suggestion: parsed.description_suggestion ?? description,
       confidence,
+      failure: null,
     }
   } catch (err) {
     // Network timeout, JSON parse error, etc. — never propagate to caller
-    console.error('[ai-categorization] Falha ao chamar OpenRouter:', err instanceof Error ? err.message : err)
-    return { category_id: null, description_suggestion: description, confidence: 'low' }
+    console.error(`[ai-categorization] Falha ao chamar OpenRouter (${model}):`, err instanceof Error ? err.message : err)
+    return failed(classifyAiException(err))
   }
 }
 
@@ -325,25 +364,24 @@ async function callOpenRouter(
  * Ordem de precedência (da mais confiável pra mais genérica — cada passo só
  * roda se o anterior não achou nada):
  *   1. Regra aprendida (category_rules) — mesma descrição normalizada já
- *      vista e confirmada antes. confidence 'high', source 'rule'/'auto'.
- *   2. Histórico de transações do usuário — mesma contraparte recorrente
- *      (fingerprint ignorando números que variam por fatura/data) já
- *      categorizada manualmente antes. confidence 'high', source 'rule' —
- *      reaproveita o mesmo badge da regra aprendida porque semanticamente é
- *      a mesma coisa: uma decisão que o próprio usuário já tomou.
- *   3. Correspondência direta com nome de categoria/subcategoria cadastrada
- *      — a descrição cita literalmente o nome de uma categoria do usuário
- *      (ex.: "Alimentação" no texto). confidence 'high', source 'keyword'.
+ *      vista e confirmada antes, na entidade ativa (ou regra legada global,
+ *      entity_id NULL). confidence 'high', source 'rule'/'auto'.
+ *   2. Histórico de transações das contas da entidade ativa — mesma
+ *      contraparte recorrente (fingerprint ignorando números que variam por
+ *      fatura/data) já categorizada manualmente antes. confidence 'high',
+ *      source 'rule'.
+ *   3. Correspondência direta com nome de categoria/subcategoria cadastrada.
+ *      confidence 'high', source 'keyword'.
  *   4. IA (OpenRouter), com fallback pra lista de palavras-chave embutida se
- *      a IA não responder — sugestão genérica, sem precedente do usuário.
- *      confidence conforme a IA retornar (inclusive 'low') ou 'medium' fixo
- *      pro fallback de palavra-chave.
+ *      a IA não responder. Se a IA falhou, `ai_failure` diz o motivo.
  *   5. Sem sugestão nenhuma — confidence 'low', category_id null.
  *
- * Com `type` (receita/despesa da linha), os passos 3 e 4 só sugerem categorias
- * desse tipo; uma resposta da IA de tipo incompatível é descartada e cai no
- * fallback de palavras-chave. Descrições de isNoAutoCategory() nunca recebem
- * sugestão.
+ * `categories` é a lista do dropdown; com `type` (receita/despesa da linha),
+ * só categorias desse tipo valem. Qualquer id sugerido fora dessa lista é
+ * descartado e a busca segue para o passo seguinte. Descrições de
+ * isNoAutoCategory() nunca recebem sugestão.
+ *
+ * `entityId`: entidade da tela; sem ela (ou sem acesso), vale a entidade ativa.
  *
  * Nunca lança erro — categorização é sugestão, não bloqueio.
  */
@@ -360,6 +398,7 @@ export async function suggestCategory(
     description_suggestion: description,
     confidence: 'low',
     source: 'ai',
+    ai_failure: null,
   }
 
   if (isNoAutoCategory(description)) return fallback
@@ -372,52 +411,48 @@ export async function suggestCategory(
     const pattern = normalizeDescription(description)
     if (!pattern) return fallback
 
+    const entity = await resolveEntityId(supabase, user.id, entityId)
+
+    // ── Categorias válidas (as do dropdown, do tipo da linha) ────────────────
+    const catOptions = categories && categories.length > 0
+      ? categories
+      : await loadEntityCategories(supabase, user.id, entity)
+    const pool = type ? catOptions.filter((c) => c.type === type) : catOptions
+    const allowed = allowedCategoryIds(catOptions, type)
+    const nameOf = (id: string) => catOptions.find((c) => c.id === id)?.name ?? ''
+
     // ── PASSO 1: regra aprendida ─────────────────────────────────────────────
-    const rule = await lookupRule(supabase, pattern, entityId, user.id)
-    if (rule) {
-      // Busca nome da categoria para exibir
-      const { data: cat } = await supabase
-        .from('categories')
-        .select('name')
-        .eq('id', rule.category_id)
-        .single()
-
-      await incrementMatchCount(supabase, pattern, entityId, user.id)
-
+    const rule = chooseRule(await loadRules(supabase, pattern, entity, user.id), entity)
+    if (rule && allowed.has(rule.category_id)) {
+      await updateRule(supabase, rule.id, { match_count: (rule.match_count ?? 0) + 1 })
+      const confirmCount = rule.confirm_count ?? 1
       return {
         category_id: rule.category_id,
-        category_name: cat?.name ?? '',
+        category_name: nameOf(rule.category_id),
         description_suggestion: description,
         confidence: 'high',
-        source: rule.confirm_count >= AUTO_APPLY_CONFIRM_THRESHOLD ? 'auto' : 'rule',
+        source: confirmCount >= AUTO_APPLY_CONFIRM_THRESHOLD ? 'auto' : 'rule',
+        ai_failure: null,
       }
     }
 
+    const accountIds = await entityAccountIds(supabase, user.id, entity)
+
     // ── PASSO 2: histórico de transações já categorizadas pelo usuário ──────
-    const historyMatch = await findHistoricalCategoryMatch(supabase, description, entityId, user.id)
+    const historyMatch = await findHistoricalCategoryMatch(supabase, description, accountIds, user.id, allowed)
     if (historyMatch) {
       return {
         category_id: historyMatch.category_id,
-        category_name: historyMatch.category_name,
+        category_name: historyMatch.category_name || nameOf(historyMatch.category_id),
         description_suggestion: description,
         confidence: 'high',
         source: 'rule',
+        ai_failure: null,
       }
     }
 
-    // ── Categorias do usuário (usadas pelos passos 3 e 4) ────────────────────
-    let catOptions = categories ?? []
-    if (catOptions.length === 0) {
-      // RLS já filtra pelo usuário autenticado — não precisa de filtro manual
-      const { data } = await supabase
-        .from('categories')
-        .select('id, name, type, icon, parent_id')
-        .order('name')
-      catOptions = (data ?? []) as CategoryOption[]
-    }
-
     // ── PASSO 3: correspondência direta com nome de categoria cadastrada ────
-    const nameMatch = matchCategoryNameInDescription(description, catOptions, type)
+    const nameMatch = matchCategoryNameInDescription(description, pool)
     if (nameMatch) {
       return {
         category_id: nameMatch.id,
@@ -425,44 +460,42 @@ export async function suggestCategory(
         description_suggestion: description,
         confidence: 'high',
         source: 'keyword',
+        ai_failure: null,
       }
     }
 
     // ── PASSO 4: IA (OpenRouter), com fallback por palavras-chave embutidas ─
-    const apiKey = process.env.OPENROUTER_API_KEY
-    const aiEnabled = !!apiKey && apiKey !== 'sk-' && apiKey.length > 10
-    const recentTx = aiEnabled ? await fetchRecentTransactions(supabase, user.id, entityId) : []
-    const aiResult = await callOpenRouter(description, amount, catOptions, recentTx)
+    const recentTx = aiKeyConfigured() ? await fetchRecentTransactions(supabase, user.id, accountIds) : []
+    const aiResult = await callOpenRouter(description, amount, pool, recentTx)
 
-    // Resposta da IA de tipo incompatível com a linha (ex.: categoria de
-    // despesa para um crédito) é tratada como "sem resposta".
-    const aiCategory = aiResult.category_id ? catOptions.find((c) => c.id === aiResult.category_id) : undefined
-    const aiIncompatible = !!type && !!aiCategory && aiCategory.type !== type
+    // Resposta da IA fora da lista (outro tipo, outra entidade, id inventado)
+    // é tratada como "sem resposta".
+    const aiCategory = aiResult.category_id && allowed.has(aiResult.category_id)
+      ? pool.find((c) => c.id === aiResult.category_id)
+      : undefined
 
-    if (!aiResult.category_id || aiIncompatible) {
-      const kwCatId = keywordFallback(description, catOptions, type)
-      if (kwCatId) {
-        const kwCat = catOptions.find((c) => c.id === kwCatId)
+    if (!aiCategory) {
+      const kwCatId = keywordFallback(description, pool)
+      if (kwCatId && allowed.has(kwCatId)) {
         return {
           category_id: kwCatId,
-          category_name: kwCat?.name ?? '',
+          category_name: nameOf(kwCatId),
           description_suggestion: description,
           confidence: 'medium',
           source: 'keyword',
+          ai_failure: aiResult.failure,
         }
       }
-      return { ...fallback, description_suggestion: aiResult.description_suggestion }
+      return { ...fallback, description_suggestion: aiResult.description_suggestion, ai_failure: aiResult.failure }
     }
 
-    // Valida que o category_id devolvido realmente existe na lista
-    const matched = aiCategory
-
     return {
-      category_id: matched?.id ?? null,
-      category_name: matched?.name ?? 'Sem categoria',
+      category_id: aiCategory.id,
+      category_name: aiCategory.name,
       description_suggestion: aiResult.description_suggestion,
       confidence: aiResult.confidence,
       source: 'ai',
+      ai_failure: null,
     }
   } catch (err) {
     console.error('[ai-categorization] suggestCategory falhou:', err instanceof Error ? err.message : err)
@@ -471,9 +504,14 @@ export async function suggestCategory(
 }
 
 /**
- * Persiste uma regra aprendida (upsert).
+ * Persiste uma regra aprendida na entidade ativa (upsert).
  * Chamado quando o usuário confirma uma categorização — seja vinda da IA
  * ou de uma escolha manual após sugestão.
+ *
+ * A primeira confirmação numa entidade cria a regra dela; se havia regra
+ * legada global (entity_id NULL) com a mesma categoria, a nova herda as
+ * contagens dela, para não perder a auto-aplicação já conquistada. A regra
+ * legada não é alterada (continua valendo para as outras entidades).
  */
 export async function learnRule(
   description: string,
@@ -488,10 +526,14 @@ export async function learnRule(
     const pattern = normalizeDescription(description)
     if (!pattern) return
 
-    // Tenta incrementar se já existe
-    const existing = await lookupRule(supabase, pattern, entityId, user.id)
-    if (existing) {
-      if (existing.category_id !== categoryId) {
+    const entity = await resolveEntityId(supabase, user.id, entityId)
+    const rules = await loadRules(supabase, pattern, entity, user.id)
+    // Sem entidade (usuário sem nenhuma — caso de borda pré-migração), a regra
+    // é a global mesmo.
+    const own = entity ? rules.find((r) => r.entity_id === entity) : rules.find((r) => r.entity_id === null)
+
+    if (own) {
+      if (own.category_id !== categoryId) {
         // Usuário corrigiu para uma categoria diferente da regra aprendida →
         // quebra de confiança. Decisão: zera match_count E confirm_count (não
         // apenas decrementa) porque o histórico acumulado media confiança na
@@ -500,33 +542,24 @@ export async function learnRule(
         // também garante que uma regra que estava auto-aplicando (confirm_count
         // >= AUTO_APPLY_CONFIRM_THRESHOLD) e foi corrigida volte a pedir
         // confirmação manual até acumular confiança de novo.
-        let q = table(supabase, 'category_rules')
-          .select('id')
-          .eq('user_id', user.id)
-          .eq('pattern', pattern)
-        if (entityId) q = q.eq('entity_id', entityId)
-        else q = q.is('entity_id', null)
-        const { data: row } = await q.limit(1).single()
-        if (row) {
-          await table(supabase, 'category_rules')
-            .update({ category_id: categoryId, match_count: 1, confirm_count: 1, updated_at: new Date().toISOString() })
-            .eq('id', row.id)
-        }
+        await updateRule(supabase, own.id, { category_id: categoryId, match_count: 1, confirm_count: 1 })
       } else {
-        await incrementMatchCount(supabase, pattern, entityId, user.id)
-        await incrementConfirmCount(supabase, pattern, entityId, user.id)
+        await updateRule(supabase, own.id, {
+          match_count: (own.match_count ?? 0) + 1,
+          confirm_count: (own.confirm_count ?? 1) + 1,
+        })
       }
       return
     }
 
-    // Insere nova regra
+    const legacy = entity ? rules.find((r) => r.entity_id === null && r.category_id === categoryId) : undefined
     await table(supabase, 'category_rules').insert({
       user_id: user.id,
-      entity_id: entityId,
+      entity_id: entity,
       pattern,
       category_id: categoryId,
-      match_count: 1,
-      confirm_count: 1,
+      match_count: legacy ? (legacy.match_count ?? 0) + 1 : 1,
+      confirm_count: legacy ? (legacy.confirm_count ?? 1) + 1 : 1,
     })
   } catch (err) {
     // Falhas silenciosas — aprendizado é best-effort

@@ -16,6 +16,7 @@ import { UpgradePrompt } from '@/components/ui/UpgradePrompt'
 import type { Account, Category, CategorySource } from '@/types'
 import type { TransactionWithRelations } from '@/lib/actions/transactions'
 import { accountOptions } from '@/lib/accounts/usage'
+import { useActiveEntityId } from '@/contexts/EntityContext'
 
 const transactionSchema = z.object({
   type: z.enum(['income', 'expense', 'transfer']),
@@ -104,6 +105,7 @@ export function TransactionForm({
   })
 
   const type = watch('type')
+  const entityId = useActiveEntityId()
   const filteredCategories = categories.filter((c) =>
     type === 'transfer' ? false : c.type === (type === 'income' ? 'income' : 'expense')
   )
@@ -112,7 +114,7 @@ export function TransactionForm({
     if (!desc.trim() || type === 'transfer') return
     setSuggesting(true)
     try {
-      const s = await suggestCategory(desc, null, undefined, filteredCategories as Parameters<typeof suggestCategory>[3])
+      const s = await suggestCategory(desc, entityId, undefined, filteredCategories as Parameters<typeof suggestCategory>[3])
       if (s.category_id && (s.confidence === 'high' || s.confidence === 'medium')) {
         const current = watch('category_id')
         if (!current) {
@@ -169,7 +171,7 @@ export function TransactionForm({
       const result = await updateTransaction(transactionId!, payload)
       if (result.error) { setServerError(result.error); return }
       if (payload.description && payload.category_id) {
-        learnRule(payload.description, payload.category_id, null).catch(() => {})
+        learnRule(payload.description, payload.category_id, entityId).catch(() => {})
       }
       // Correção manual de uma categoria pré-existente → propaga pro
       // histórico. Fire-and-forget: não bloqueia o fechamento do form.
@@ -220,7 +222,7 @@ export function TransactionForm({
     }
 
     if (payload.description && payload.category_id) {
-      learnRule(payload.description, payload.category_id, null).catch(() => {})
+      learnRule(payload.description, payload.category_id, entityId).catch(() => {})
     }
     onSuccess()
   }

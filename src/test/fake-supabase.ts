@@ -51,7 +51,14 @@ export function createFakeSupabase(opts: {
       eq: (k: string, v: unknown) => { filters.push(r => r[k] === v); return builder },
       neq: (k: string, v: unknown) => { filters.push(r => r[k] !== v); return builder },
       is: (k: string, v: unknown) => { filters.push(r => (r[k] ?? null) === v); return builder },
-      in: (k: string, vs: unknown[]) => { filters.push(r => vs.includes(r[k])); return builder },
+      in: (k: string, vs: readonly unknown[]) => { filters.push(r => vs.includes(r[k])); return builder },
+      /** Só a forma usada no código: .not(col, 'is', null). */
+      not: (k: string, op: string, v: unknown) => {
+        if (op === 'is') filters.push(r => (r[k] ?? null) !== v)
+        return builder
+      },
+      /** Filtro .or() do PostgREST não é interpretado — devolve tudo. */
+      or: () => builder,
       gte: (k: string, v: string) => { filters.push(r => String(r[k]) >= v); return builder },
       lte: (k: string, v: string) => { filters.push(r => String(r[k]) <= v); return builder },
       lt: (k: string, v: string) => { filters.push(r => String(r[k]) < v); return builder },

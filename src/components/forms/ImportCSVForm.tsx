@@ -1,18 +1,27 @@
 'use client'
 
 import { useState, useRef, useEffect } from 'react'
+import { toast } from 'sonner'
 import {
-  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, Plus, ArrowLeftRight,
+  Upload, X, Loader2, AlertTriangle, FileSpreadsheet, FileText, File, ArrowLeftRight,
 } from 'lucide-react'
 import { importTransactions, findImportDuplicates, findKnownBankTransactionIds, type CSVRow, type DuplicateMatch } from '@/lib/actions/transactions'
 import { parsePDFAction, type ParsedRow } from '@/lib/actions/import'
-import { analyzeImportTransfers } from '@/lib/actions/transfers'
+import { analyzeImportTransfers, getAccountHolder } from '@/lib/actions/transfers'
 import {
-  fromDetection, chooseDestination, chooseCandidate, clearTransfer, importActionOf,
-  isTransferRow, isAbsorbed, TRANSFER_STATUS_LABEL, type RowTransferState,
+  chooseDestination, chooseCandidate, clearTransfer, importActionOf,
+  isTransferRow, isAbsorbed, needsDestination, previewTransferState,
+  checkedAfterDetection, checkedAfterTransferEdit, applyTypeChoice, rowKind, absorbedLegDateIfDifferent,
+  TRANSFER_STATUS_LABEL, type RowTransferState, type RowKind,
 } from '@/lib/import/transfer-preview'
+import type { AccountHolder } from '@/lib/import/holder-signal'
+import type { TransferSkipped } from '@/lib/actions/transactions'
+import { QuickAccountDialog } from '@/components/forms/QuickAccountDialog'
 import { ensureDefaultCategoriesForImport, createCategory } from '@/lib/actions/categories'
 import { suggestCategory, learnRule } from '@/lib/actions/ai-categorization'
+import { aiFailureLabel } from '@/lib/utils/categorization'
+import { validateNewCategoryName } from '@/lib/utils/new-category'
+import { useActiveEntityId } from '@/contexts/EntityContext'
 import { mergeSuggestionIntoRow, getCategoryBadge } from '@/lib/utils/import-suggestions'
 import { formatDate, formatCurrency } from '@/lib/utils/format'
 import { cn } from '@/lib/utils/cn'
@@ -58,6 +67,7 @@ interface ImportResult {
   errorDetails: string[]
   transfers: number
   absorbed: number
+  transferSkipped: TransferSkipped[]
 }
 
 type FileFormat = 'csv' | 'xlsx' | 'ofx' | 'pdf'
@@ -99,6 +109,9 @@ function suggestCategoryId(description: string, categories: Category[]): string 
   return categories.find(c => c.name.toLowerCase() === 'outros')?.id ?? null
 }
 
+/** Valor da opção "+ Criar conta…" no select de conta destino. */
+const NEW_ACCOUNT_OPTION = '__new_account__'
+
 // ─── Parsed → Editable conversion ────────────────────────────────────────────
 
 function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
@@ -122,9 +135,9 @@ function parsedToEditable(parsed: ParsedRow[]): EditableRow[] {
   })
 }
 
-/** Linhas que o usuário pode marcar/desmarcar (já registradas via transferência não geram linha nova). */
+/** Linhas que o usuário pode marcar/desmarcar. Absorvidas não geram linha nova; transferência sem destino não pode ser gravada. */
 function isSelectable(r: EditableRow): boolean {
-  return !r.error && !isAbsorbed(r.transfer)
+  return !r.error && !isAbsorbed(r.transfer) && !needsDestination(r.transfer)
 }
 
 function detectFormat(name: string): FileFormat | null {
@@ -206,7 +219,13 @@ function AmountCell({ amount, type, onChange }: {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export function ImportCSVForm({ accounts, categories: initialCategories, onSuccess, onCancel }: ImportCSVFormProps) {
+export function ImportCSVForm({ accounts: initialAccounts, categories: initialCategories, onSuccess, onCancel }: ImportCSVFormProps) {
+  /** Lista local: "+ Criar conta…" acrescenta a conta nova sem recarregar a página. */
+  const [accounts, setAccounts] = useState<Account[]>(initialAccounts)
+  /** Linha cujo "+ Criar conta…" está aberto. */
+  const [creatingAccountFor, setCreatingAccountFor] = useState<number | null>(null)
+  /** Selects de conta destino, por linha — focados ao escolher "Transferência". */
+  const destRefs = useRef<Record<number, HTMLSelectElement | null>>({})
   const [step, setStep] = useState<Step>('idle')
   const [format, setFormat] = useState<FileFormat | null>(null)
   const [fileName, setFileName] = useState('')
@@ -218,6 +237,9 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [selectedAccount, setSelectedAccount] = useState(accounts[0]?.id ?? '')
   const [importing, setImporting] = useState(false)
   const [suggestingAi, setSuggestingAi] = useState(false)
+  /** Motivo curto quando a IA falhou nesta importação (faixa única na prévia). */
+  const [aiUnavailable, setAiUnavailable] = useState<string | null>(null)
+  const entityId = useActiveEntityId()
   const [checkingDuplicates, setCheckingDuplicates] = useState(false)
   const [checkingTransfers, setCheckingTransfers] = useState(false)
   const [onlyTransfers, setOnlyTransfers] = useState(false)
@@ -226,7 +248,6 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const [balanceCheck, setBalanceCheck] = useState<BalanceChainResult | null>(null)
   const [result, setResult] = useState<ImportResult | null>(null)
   const [allCategories, setAllCategories] = useState<Category[]>(initialCategories)
-  const [newCat, setNewCat] = useState<{ rowIdx: number; name: string; color: string; saving: boolean } | null>(null)
   const fileRef = useRef<HTMLInputElement>(null)
   // Ref so handleFile always reads the latest categories without stale closure
   const catsRef = useRef<Category[]>(initialCategories)
@@ -258,16 +279,37 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   function updateTransfer(idx: number, next: RowTransferState) {
     setEditableRows(rows => rows.map((r, i) => {
       if (i !== idx) return r
-      const wasAbsorbed = isAbsorbed(r.transfer)
-      const nowAbsorbed = isAbsorbed(next)
+      // Escolher destino marca a linha; sem destino ou absorvida, desmarca.
+      return { ...r, transfer: next, checked: checkedAfterTransferEdit(r, r.transfer, next) }
+    }))
+  }
+
+  /** Controle de tipo da linha: Receita / Despesa / Transferência. */
+  function chooseRowKind(idx: number, choice: RowKind) {
+    const row = editableRows[idx]
+    if (!row) return
+    const patch = applyTypeChoice(row, choice)
+    setEditableRows(rows => rows.map((r, i) => {
+      if (i !== idx) return r
+      const transfer = patch.transfer
       return {
         ...r,
-        transfer: next,
-        // Já registrada via transferência não gera linha nova; ao sair desse
-        // estado, a linha volta a ser importável.
-        checked: nowAbsorbed ? false : wasAbsorbed ? true : r.checked,
+        type: patch.type,
+        amount: patch.amount,
+        transfer,
+        checked: transfer && transfer !== r.transfer ? checkedAfterTransferEdit(r, r.transfer, transfer) : r.checked,
+        ...(patch.resetCategory ? { categoryId: null, source: null, confidence: null } : {}),
       }
     }))
+    if (choice === 'transfer') setTimeout(() => destRefs.current[idx]?.focus(), 0)
+  }
+
+  /** Conta criada pelo "+ Criar conta…": entra na lista e vira o destino da linha. */
+  function handleAccountCreated(account: Account) {
+    const idx = creatingAccountFor
+    setAccounts(list => [...list, account].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')))
+    setCreatingAccountFor(null)
+    if (idx !== null && editableRows[idx]) updateTransfer(idx, chooseDestination(editableRows[idx].transfer, account.id))
   }
 
   async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
@@ -414,6 +456,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
 
   async function runAiSuggestions(rows: EditableRow[]) {
     const toSuggest = rows.map((r, i) => ({ i, r })).filter(({ r }) => !r.error && (r.checked || !!r.warning))
+    setAiUnavailable(null)
     if (toSuggest.length === 0) return
     setSuggestingAi(true)
     try {
@@ -423,9 +466,11 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         const batch = toSuggest.slice(b, b + BATCH)
         const results = await Promise.all(
           batch.map(({ i: idx, r }) =>
-            suggestCategory(r.description, null, Math.abs(r.amount), cats, r.type).then(s => ({ idx, s })).catch(() => null)
+            suggestCategory(r.description, entityId, Math.abs(r.amount), cats, r.type).then(s => ({ idx, s })).catch(() => null)
           )
         )
+        const failure = results.find(item => item?.s.ai_failure)?.s.ai_failure
+        if (failure) setAiUnavailable(prev => prev ?? aiFailureLabel(failure))
         setEditableRows(prev => {
           const next = [...prev]
           for (const item of results) {
@@ -456,6 +501,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     if (valid.length === 0 || !accountId) return rows
     setCheckingTransfers(true)
     try {
+      const holderPromise: Promise<AccountHolder | null> = getAccountHolder().catch(() => null)
       const dets = await analyzeImportTransfers(
         valid.map(({ r }) => ({
           date: r.date,
@@ -466,13 +512,15 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
         })),
         accountId,
       )
+      const holder = await holderPromise
       const detected = new Map<number, RowTransferState | null>()
-      valid.forEach(({ i }, k) => detected.set(i, fromDetection(dets[k])))
+      // Sinais A/B primeiro; o sinal "titular" só nas linhas sem outro resultado.
+      valid.forEach(({ i, r }, k) => detected.set(i, previewTransferState(dets[k], r.description, holder)))
 
       const apply = (list: EditableRow[]) => list.map((r, i) => {
         if (!detected.has(i) || r.transfer?.manual) return r
         const t = detected.get(i) ?? null
-        return { ...r, transfer: t, checked: isAbsorbed(t) ? false : r.checked }
+        return { ...r, transfer: t, checked: checkedAfterDetection(r, t) }
       })
       setEditableRows(prev => apply(prev))
       return apply(rows)
@@ -517,31 +565,36 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     }
   }
 
-  async function saveNewCategory() {
-    if (!newCat || !newCat.name.trim()) return
-    const rowIdx = newCat.rowIdx
-    const name = newCat.name.trim()
-    const color = newCat.color
+  /**
+   * "Nova categoria" do menu da linha. Devolve true quando criou e selecionou
+   * a categoria na linha (o menu fecha); false mantém o formulário aberto —
+   * a falha já foi avisada por toast.
+   */
+  async function createCategoryForRow(rowIdx: number, input: { name: string; color: string }): Promise<boolean> {
     const rowType = editableRows[rowIdx]?.type ?? 'expense'
-    setNewCat(c => c ? { ...c, saving: true } : c)
+    const invalid = validateNewCategoryName(input.name, rowType, catsRef.current)
+    if (invalid) { toast.error(invalid); return false }
 
-    const result = await createCategory({ name, type: rowType, icon: '📦', color })
-    console.log('[ImportCSVForm] createCategory result:', JSON.stringify(result))
+    let result: Awaited<ReturnType<typeof createCategory>>
+    try {
+      result = await createCategory({ name: input.name.trim(), type: rowType, icon: '📦', color: input.color })
+    } catch (err) {
+      console.error('[ImportCSVForm] createCategory falhou:', err)
+      toast.error('Não foi possível criar a categoria. Tente de novo.')
+      return false
+    }
     if (result.error || !result.data) {
-      console.log('[ImportCSVForm] Falhou — error:', result.error, '| data:', result.data)
-      setNewCat(c => c ? { ...c, saving: false } : c)
-      return
+      toast.error(`Não foi possível criar a categoria: ${result.error ?? 'resposta vazia do servidor'}`)
+      return false
     }
 
-    // Append directly — no second server call, no race condition
+    // Append direto — sem segunda chamada ao servidor
     const newCategory = result.data
-    console.log('[ImportCSVForm] Categorias antes:', catsRef.current.length, catsRef.current.map(c => c.name))
     const updated = [...catsRef.current, newCategory].sort((a, b) => a.name.localeCompare(b.name, 'pt-BR'))
-    console.log('[ImportCSVForm] Categorias depois:', updated.length, '| nova:', newCategory.name, newCategory.id)
     setAllCategories(updated)
     catsRef.current = updated
-    updateRow(rowIdx, { categoryId: newCategory.id, source: 'manual' })
-    setNewCat(null)
+    updateRow(rowIdx, { categoryId: newCategory.id, source: 'manual', confidence: null })
+    return true
   }
 
   async function handleImport() {
@@ -574,14 +627,15 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     for (const r of toImport) {
       if (importActionOf(r.transfer)) continue
       if (r.categoryId && r.description && r.confidence !== 'low') {
-        learnRule(r.description, r.categoryId, null).catch(() => {})
+        learnRule(r.description, r.categoryId, entityId).catch(() => {})
       }
     }
 
     setResult(res)
     setImporting(false)
     setStep('done')
-    if (res.inserted + res.transfers + res.absorbed > 0) setTimeout(onSuccess, 1500)
+    // Com pares recusados o resumo fica aberto até o usuário ler.
+    if (res.inserted + res.transfers + res.absorbed > 0 && res.transferSkipped.length === 0) setTimeout(onSuccess, 1500)
   }
 
   function reset() {
@@ -589,6 +643,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
     setEditableRows([]); setRawHeaders([]); setRawRows([]); setResult(null)
     setAutoSkippedCount(0)
     setBalanceCheck(null)
+    setAiUnavailable(null)
     if (fileRef.current) fileRef.current.value = ''
   }
 
@@ -599,6 +654,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
   const absorbedCount = editableRows.filter(r => !r.error && isAbsorbed(r.transfer)).length
   const transferCount = editableRows.filter(r => !r.error && isTransferRow(r.transfer)).length
   const ambiguousCount = editableRows.filter(r => !r.error && r.transfer?.status === 'ambiguous').length
+  const unassignedCount = editableRows.filter(r => !r.error && needsDestination(r.transfer)).length
   const otherAccounts = accounts.filter(a => a.id !== selectedAccount)
   const accountName = (id: string | null) => accounts.find(a => a.id === id)?.name ?? '—'
 
@@ -626,6 +682,16 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             {result.transfers > 0 && result.absorbed > 0 && ' · '}
             {result.absorbed > 0 && `${result.absorbed} já registrada${result.absorbed > 1 ? 's' : ''} via transferência (par confirmado)`}
           </p>
+        )}
+        {result.transferSkipped.length > 0 && (
+          <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1 max-h-40 overflow-y-auto">
+            <p className="text-xs font-semibold text-amber-800">
+              {result.transferSkipped.length} linha{result.transferSkipped.length > 1 ? 's' : ''} marcada{result.transferSkipped.length > 1 ? 's' : ''} como transferência não {result.transferSkipped.length > 1 ? 'foram vinculadas' : 'foi vinculada'} e {result.transferSkipped.length > 1 ? 'entraram' : 'entrou'} como receita/despesa, sem categoria:
+            </p>
+            {result.transferSkipped.map((t, i) => (
+              <p key={i} className="text-xs text-amber-700">{formatDate(t.date)} · {t.description} — {t.reason}</p>
+            ))}
+          </div>
         )}
         {result.errorDetails.length > 0 && (
           <div className="bg-red-50 rounded-lg p-3 space-y-1 max-h-32 overflow-y-auto">
@@ -660,7 +726,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                 transfer: null,
                 duplicate: null,
                 // Remarca o que tinha sido desmarcado automaticamente.
-                checked: r.error ? false : (r.duplicate || isAbsorbed(r.transfer)) ? true : r.checked,
+                checked: r.error ? false : (r.duplicate || isAbsorbed(r.transfer) || needsDestination(r.transfer)) ? true : r.checked,
               }))
               setEditableRows(reset)
               runImportChecks(reset, accountId)
@@ -881,6 +947,13 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             </div>
           ))}
 
+          {aiUnavailable && (
+            <p className="mb-3 flex items-center gap-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-lg px-3 py-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              Sugestão automática por IA indisponível ({aiUnavailable}). Usando só regras e palavras-chave.
+            </p>
+          )}
+
           {checkingTransfers && (
             <div className="mb-3 flex items-center gap-3 rounded-lg bg-sky-50 border border-sky-200 px-4 py-3">
               <Loader2 className="w-5 h-5 animate-spin text-sky-500 shrink-0" />
@@ -899,6 +972,7 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                   Não entram como receita nem despesa.
                   {absorbedCount > 0 && ` ${absorbedCount} já registrada${absorbedCount > 1 ? 's' : ''} via transferência — só ${absorbedCount > 1 ? 'serão confirmadas' : 'será confirmada'}, sem linha nova.`}
                   {ambiguousCount > 0 && ` ${ambiguousCount} com mais de um par possível — escolha o par na coluna "Conta destino", ou ${ambiguousCount > 1 ? 'entrarão' : 'entrará'} como receita/despesa.`}
+                  {unassignedCount > 0 && ` ${unassignedCount} sem conta destino — escolha a conta na coluna "Conta destino" (ou mude o tipo para receita/despesa); sem isso ${unassignedCount > 1 ? 'não serão importadas' : 'não será importada'}.`}
                 </p>
               </div>
             </div>
@@ -1006,10 +1080,27 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                                 {row.warning} — confira antes de marcar
                               </span>
                             )}
-                            {isAbsorbed(row.transfer) && (
-                              <span className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-sky-700">
-                                <ArrowLeftRight className="w-3 h-3 shrink-0" />
-                                já registrada via transferência
+                            {isAbsorbed(row.transfer) && (() => {
+                              const legDate = absorbedLegDateIfDifferent(row.transfer, row.date)
+                              return (
+                                <span
+                                  className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-sky-700"
+                                  title={legDate ? `A transferência pendente estava em ${formatDate(legDate)}; ao importar, ela passa para ${formatDate(row.date)}, a data deste extrato.` : undefined}
+                                >
+                                  <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                                  {legDate
+                                    ? `absorve transferência pendente de ${formatDate(legDate).slice(0, 5)}`
+                                    : 'já registrada via transferência'}
+                                </span>
+                              )
+                            })()}
+                            {row.transfer?.pendingTie && (
+                              <span
+                                className="flex items-center gap-1 mt-0.5 text-[10px] font-medium text-orange-600"
+                                title="Há mais de uma transferência pendente com este valor em datas igualmente próximas — escolha o par na coluna Conta destino, ou a linha entra como receita/despesa."
+                              >
+                                <AlertTriangle className="w-3 h-3 shrink-0" />
+                                vários pares pendentes possíveis
                               </span>
                             )}
                             {row.duplicate && (
@@ -1037,7 +1128,8 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                             categories={allCategories.filter(c => c.type === row.type)}
                             value={row.categoryId ?? ''}
                             onChange={val => updateRow(i, { categoryId: val || null, source: val ? 'manual' : null, confidence: null })}
-                            onCreateNew={() => setNewCat({ rowIdx: i, name: '', color: '#6b7280', saving: false })}
+                            onCreate={input => createCategoryForRow(i, input)}
+                            createType={row.type}
                             placeholder="— categoria —"
                             compact
                           />
@@ -1082,36 +1174,26 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         )}
                       </td>
 
-                      {/* Type toggle */}
+                      {/* Tipo: Receita / Despesa / Transferência */}
                       <td className="px-2 py-1.5">
-                        {isTransferRow(row.transfer) && !row.error ? (
-                          <button
-                            onClick={() => updateTransfer(i, clearTransfer(row.transfer))}
-                            title="Clique para tratar como receita/despesa"
-                            className="w-full px-1 py-0.5 rounded-full text-xs font-medium text-center bg-sky-100 text-sky-700 hover:bg-sky-200 transition-colors"
-                          >
-                            {row.amount < 0 ? 'Transf. ↗' : 'Transf. ↙'}
-                          </button>
-                        ) : (
-                        <button
-                          onClick={() => updateRow(i, {
-                            type: row.type === 'income' ? 'expense' : 'income',
-                            amount: -row.amount,
-                            categoryId: null,
-                            source: null,
-                            confidence: null,
-                          })}
+                        <select
+                          value={rowKind(row)}
+                          onChange={e => chooseRowKind(i, e.target.value as RowKind)}
                           disabled={!!row.error}
+                          title={isTransferRow(row.transfer) ? (row.amount < 0 ? 'Transferência de saída' : 'Transferência de entrada') : undefined}
                           className={cn(
-                            'w-full px-1 py-0.5 rounded-full text-xs font-medium text-center transition-colors',
-                            row.type === 'income'
-                              ? 'bg-emerald-100 text-emerald-700 hover:bg-emerald-200'
-                              : 'bg-red-100 text-red-700 hover:bg-red-200',
+                            'w-full px-1 py-0.5 rounded-full text-xs font-medium text-center border-0 cursor-pointer focus:outline-none focus:ring-1 focus:ring-emerald-400 disabled:cursor-default',
+                            isTransferRow(row.transfer)
+                              ? 'bg-sky-100 text-sky-700'
+                              : row.type === 'income'
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : 'bg-red-100 text-red-700',
                           )}
                         >
-                          {row.type === 'income' ? 'Receita' : 'Despesa'}
-                        </button>
-                        )}
+                          <option value="income">Receita</option>
+                          <option value="expense">Despesa</option>
+                          <option value="transfer">{row.amount < 0 ? 'Transf. ↗' : 'Transf. ↙'}</option>
+                        </select>
                       </td>
 
                       {/* Destination account / transfer status */}
@@ -1119,14 +1201,21 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                         {!row.error && (
                           <div className="space-y-0.5">
                             <select
+                              ref={el => { destRefs.current[i] = el }}
                               value={isTransferRow(row.transfer) ? (row.transfer.destinationAccountId ?? '') : ''}
-                              onChange={e => updateTransfer(i, e.target.value
-                                ? chooseDestination(row.transfer, e.target.value)
-                                : clearTransfer(row.transfer))}
-                              className="w-full bg-transparent border-b border-transparent hover:border-gray-200 focus:border-sky-400 focus:outline-none text-gray-700 py-0.5 truncate"
+                              onChange={e => {
+                                const v = e.target.value
+                                if (v === NEW_ACCOUNT_OPTION) { setCreatingAccountFor(i); return }
+                                updateTransfer(i, v ? chooseDestination(row.transfer, v) : clearTransfer(row.transfer))
+                              }}
+                              className={cn(
+                                'w-full bg-transparent border-b hover:border-gray-200 focus:border-sky-400 focus:outline-none text-gray-700 py-0.5 truncate',
+                                needsDestination(row.transfer) ? 'border-amber-300' : 'border-transparent',
+                              )}
                             >
-                              <option value="">—</option>
+                              <option value="">{needsDestination(row.transfer) ? 'Escolher conta…' : '—'}</option>
                               {otherAccounts.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                              <option value={NEW_ACCOUNT_OPTION}>+ Criar conta…</option>
                             </select>
                             {row.transfer?.status === 'ambiguous' && (
                               <select
@@ -1149,7 +1238,17 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
                               </select>
                             )}
                             {isTransferRow(row.transfer) && (
-                              <TransferBadge status={row.transfer.status} />
+                              <div className="flex flex-wrap gap-0.5">
+                                {row.transfer.holder && (
+                                  <span
+                                    title="A descrição cita o seu nome completo (Configurações › Perfil) — parece transferência entre contas suas"
+                                    className="inline-block px-1.5 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap bg-violet-50 text-violet-700"
+                                  >
+                                    Titular
+                                  </span>
+                                )}
+                                <TransferBadge status={row.transfer.status} />
+                              </div>
                             )}
                           </div>
                         )}
@@ -1174,47 +1273,11 @@ export function ImportCSVForm({ accounts, categories: initialCategories, onSucce
             </div>
           </div>
 
-          {/* Inline new category form */}
-          {newCat && (
-            <div className="mt-2 border border-emerald-200 bg-emerald-50 rounded-xl p-3 space-y-2">
-              <p className="text-xs font-medium text-emerald-800">Nova categoria</p>
-              <div className="flex gap-2 items-center">
-                <input
-                  autoFocus
-                  placeholder="Nome da categoria"
-                  value={newCat.name}
-                  onChange={e => setNewCat(c => c ? { ...c, name: e.target.value } : c)}
-                  onKeyDown={e => { if (e.key === 'Enter') saveNewCategory(); if (e.key === 'Escape') setNewCat(null) }}
-                  className="flex-1 px-2.5 py-1.5 border border-gray-300 rounded-lg text-xs bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                />
-                <div className="flex gap-1 shrink-0">
-                  {['#22c55e','#3b82f6','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#6b7280','#9ca3af'].map(color => (
-                    <button
-                      key={color}
-                      type="button"
-                      onClick={() => setNewCat(c => c ? { ...c, color } : c)}
-                      className={cn('w-5 h-5 rounded-full transition-transform', newCat.color === color ? 'ring-2 ring-offset-1 ring-gray-400 scale-110' : '')}
-                      style={{ backgroundColor: color }}
-                    />
-                  ))}
-                </div>
-              </div>
-              <div className="flex gap-2 justify-end">
-                <button onClick={() => setNewCat(null)} className="px-3 py-1 text-xs text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg bg-white">
-                  Cancelar
-                </button>
-                <button
-                  onClick={saveNewCategory}
-                  disabled={!newCat.name.trim() || newCat.saving}
-                  className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 rounded-lg"
-                >
-                  {newCat.saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
-                  Salvar
-                </button>
-              </div>
-            </div>
-          )}
         </div>
+      )}
+
+      {creatingAccountFor !== null && (
+        <QuickAccountDialog onCreated={handleAccountCreated} onClose={() => setCreatingAccountFor(null)} />
       )}
 
       {/* Actions */}
@@ -1255,6 +1318,7 @@ const TRANSFER_BADGE_CLASS: Record<keyof typeof TRANSFER_STATUS_LABEL, string> =
   suggested: 'bg-sky-50 text-sky-700',
   pending: 'bg-amber-50 text-amber-700',
   ambiguous: 'bg-orange-50 text-orange-700',
+  unassigned: 'bg-amber-50 text-amber-700',
 }
 
 const TRANSFER_BADGE_TITLE: Record<keyof typeof TRANSFER_STATUS_LABEL, string> = {
@@ -1262,6 +1326,7 @@ const TRANSFER_BADGE_TITLE: Record<keyof typeof TRANSFER_STATUS_LABEL, string> =
   suggested: 'Mesmo valor e data em outra conta — confira antes de importar',
   pending: 'O par será criado; a outra conta confirma quando o extrato dela for importado',
   ambiguous: 'Mais de um par possível — escolha qual',
+  unassigned: 'Transferência sem conta destino — escolha a conta para importar a linha',
 }
 
 function TransferBadge({ status }: { status: RowTransferState['status'] }) {

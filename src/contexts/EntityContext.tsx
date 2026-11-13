@@ -31,3 +31,8 @@ export function useEntityContext(): EntityContextValue {
   if (!ctx) throw new Error('useEntityContext must be used within EntityProvider')
   return ctx
 }
+
+/** Id da entidade ativa, ou null fora do provider / enquanto carrega. Não lança. */
+export function useActiveEntityId(): string | null {
+  return useContext(EntityContext)?.activeEntity?.id ?? null
+}

@@ -15,11 +15,19 @@
  *     (± TRANSFER_DATE_TOLERANCE_DAYS), contas diferentes.
  *   B (nome da conta): a descrição normalizada contém o nome completo de outra
  *     conta da entidade, como palavra(s) inteira(s). O maior nome vence.
+ *
+ * Absorção (perna de par pendente, criada sem extrato, na conta importada)
+ * tolera até ABSORPTION_DATE_TOLERANCE_DAYS de diferença de data: o mesmo PIX
+ * pode ser lançado em dias diferentes por cada banco (ex.: feito em 31/10,
+ * lançado pelo Sicredi em 03/11). O Sinal A continua com tolerância zero.
  */
 
 import type { TransferStatus } from '@/types'
 
 export const TRANSFER_DATE_TOLERANCE_DAYS = 0
+
+/** Diferença máxima de data para absorver uma perna pendente (só absorção). */
+export const ABSORPTION_DATE_TOLERANCE_DAYS = 3
 
 export type TransferDetectionStatus = 'matched' | 'suggested' | 'pending' | 'ambiguous' | 'none'
 
@@ -84,6 +92,11 @@ export interface TransferDetection {
   alreadyRecorded: boolean
   /** Conta encontrada pelo Sinal B, se houver. */
   nameMatchAccountId: string | null
+  /**
+   * Mais de uma perna pendente possível, nenhuma com data exata e empate na
+   * distância — não absorve (aviso "vários pares pendentes possíveis").
+   */
+  pendingTie?: boolean
 }
 
 const NONE: TransferDetection = {
@@ -111,7 +124,7 @@ function cents(n: number): number {
   return Math.round(Math.abs(n) * 100)
 }
 
-function dayDiff(a: string, b: string): number {
+export function dayDiff(a: string, b: string): number {
   const [ya, ma, da] = a.split('-').map(Number)
   const [yb, mb, db] = b.split('-').map(Number)
   return Math.abs(Date.UTC(ya, ma - 1, da) - Date.UTC(yb, mb - 1, db)) / 86_400_000
@@ -119,6 +132,35 @@ function dayDiff(a: string, b: string): number {
 
 export function sameMovement(dateA: string, amountA: number, dateB: string, amountB: number): boolean {
   return cents(amountA) === cents(amountB) && dayDiff(dateA, dateB) <= TRANSFER_DATE_TOLERANCE_DAYS
+}
+
+/** Mesmo valor em centavos e datas a até ABSORPTION_DATE_TOLERANCE_DAYS — só para absorção. */
+export function withinAbsorptionWindow(dateA: string, amountA: number, dateB: string, amountB: number): boolean {
+  return cents(amountA) === cents(amountB) && dayDiff(dateA, dateB) <= ABSORPTION_DATE_TOLERANCE_DAYS
+}
+
+type LegPick =
+  | { kind: 'leg'; leg: DetectionExisting }
+  | { kind: 'ambiguous'; tie: boolean }
+
+/**
+ * Escolhe a perna pendente a absorver entre as candidatas da janela.
+ * Data exata sempre vence (várias exatas: desempata pelo Sinal B, como antes).
+ * Sem exata: a única candidata, ou a de data mais próxima sem empate; empate →
+ * não absorve.
+ */
+function pickLeg(rowDate: string, legs: DetectionExisting[], nameMatch: string | null): LegPick {
+  const exact = legs.filter(l => dayDiff(rowDate, l.date) === 0)
+  if (exact.length === 1) return { kind: 'leg', leg: exact[0] }
+  if (exact.length > 1) {
+    const named = exact.filter(l => nameMatch && l.destinationAccountId === nameMatch)
+    return named.length === 1 ? { kind: 'leg', leg: named[0] } : { kind: 'ambiguous', tie: false }
+  }
+  if (legs.length === 1) return { kind: 'leg', leg: legs[0] }
+  const dist = legs.map(l => dayDiff(rowDate, l.date))
+  const min = Math.min(...dist)
+  const closest = legs.filter((_, k) => dist[k] === min)
+  return closest.length === 1 ? { kind: 'leg', leg: closest[0] } : { kind: 'ambiguous', tie: true }
 }
 
 /**
@@ -168,7 +210,7 @@ export function detectTransfers(
 ): TransferDetection[] {
   const accountIds = new Set(accounts.map(a => a.id))
 
-  const result = rows.map((row, i): TransferDetection => {
+  const detectRow = (row: DetectionRow, i: number, excludedLegs: ReadonlySet<string>): TransferDetection => {
     if (!row.date || !Number.isFinite(row.amount) || row.amount === 0) return NONE
     const isOutflow = row.amount < 0
 
@@ -184,30 +226,30 @@ export function detectTransfers(
 
     const nameMatch = matchAccountByName(row.description, accounts, row.accountId)
 
-    // 1. Absorção: perna de par já salva nesta conta, sem extrato, mesma direção.
+    // 1. Absorção: perna de par já salva nesta conta, sem extrato, mesma
+    // direção, data a até ABSORPTION_DATE_TOLERANCE_DAYS (ver pickLeg).
     const legs = existing.filter(e =>
       e.type === 'transfer' &&
       !!e.transferPairId &&
       e.accountId === row.accountId &&
       !e.importHash &&
       !e.bankTransactionId &&
+      !excludedLegs.has(e.id) &&
       legIsOutflow(e) === isOutflow &&
-      sameMovement(row.date, row.amount, e.date, e.amount),
+      withinAbsorptionWindow(row.date, row.amount, e.date, e.amount),
     )
     if (legs.length > 0) {
       const legCandidates: TransferCandidate[] = legs.map(l => ({
         kind: 'leg', id: l.id, accountId: l.accountId, counterpartAccountId: l.destinationAccountId,
         date: l.date, amount: l.amount, description: l.description,
       }))
-      const preferred = legs.length === 1
-        ? legs
-        : legs.filter(l => nameMatch && l.destinationAccountId === nameMatch)
-      if (preferred.length === 1) {
+      const pick = pickLeg(row.date, legs, nameMatch)
+      if (pick.kind === 'leg') {
         return {
           status: 'matched',
-          action: { kind: 'absorb', legId: preferred[0].id },
+          action: { kind: 'absorb', legId: pick.leg.id },
           candidates: legCandidates,
-          destinationAccountId: preferred[0].destinationAccountId,
+          destinationAccountId: pick.leg.destinationAccountId,
           alreadyRecorded: true,
           nameMatchAccountId: nameMatch,
         }
@@ -215,6 +257,7 @@ export function detectTransfers(
       return {
         status: 'ambiguous', action: null, candidates: legCandidates,
         destinationAccountId: nameMatch, alreadyRecorded: false, nameMatchAccountId: nameMatch,
+        ...(pick.tie ? { pendingTie: true } : {}),
       }
     }
 
@@ -283,7 +326,32 @@ export function detectTransfers(
       }
     }
     return NONE
-  })
+  }
+
+  // Uma perna pendente só pode ser absorvida por uma linha. Quando várias a
+  // escolhem, fica com a de data mais próxima (sem empate); as outras são
+  // reavaliadas sem ela. Empate: todas viram ambíguas (resolveConflicts).
+  const excluded = new Set<string>()
+  const result = rows.map((row, i) => detectRow(row, i, excluded))
+  for (let round = 0; round < rows.length; round++) {
+    const claims = new Map<string, number[]>()
+    result.forEach((d, i) => {
+      if (d.action?.kind === 'absorb') claims.set(d.action.legId, [...(claims.get(d.action.legId) ?? []), i])
+    })
+    const losers: number[] = []
+    claims.forEach((idxs, legId) => {
+      if (idxs.length < 2) return
+      const leg = existing.find(e => e.id === legId)!
+      const dist = idxs.map(i => dayDiff(rows[i].date, leg.date))
+      const min = Math.min(...dist)
+      const winners = idxs.filter((_, k) => dist[k] === min)
+      if (winners.length !== 1) return // empate entre linhas: resolveConflicts deixa todas ambíguas
+      excluded.add(legId)
+      losers.push(...idxs.filter(i => i !== winners[0]))
+    })
+    if (losers.length === 0) break
+    for (const i of losers) result[i] = detectRow(rows[i], i, excluded)
+  }
 
   return resolveConflicts(result)
 }
@@ -408,10 +476,14 @@ function legPatch(counterpartAccountId: string, pairId: string, isMirror: boolea
   }
 }
 
-/** A linha já existe como perna sem extrato: grava o hash/FITID nela e confirma o par. */
+/**
+ * A linha já existe como perna sem extrato: grava o hash/FITID nela, passa a
+ * data para a do extrato (cada conta reflete as datas do próprio extrato — a
+ * perna pode estar até ABSORPTION_DATE_TOLERANCE_DAYS distante) e confirma o par.
+ */
 export function planAbsorb(row: PlanRow, legId: string, pairId: string): PlannedOp[] {
   return [
-    { op: 'update', id: legId, patch: { import_hash: row.importHash, bank_transaction_id: row.bankTransactionId } },
+    { op: 'update', id: legId, patch: { import_hash: row.importHash, bank_transaction_id: row.bankTransactionId, date: row.date } },
     { op: 'updatePair', pairId, patch: { transfer_status: 'matched' } },
   ]
 }
