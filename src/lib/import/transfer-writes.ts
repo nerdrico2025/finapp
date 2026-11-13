@@ -4,6 +4,7 @@ import {
   planConvert,
   planCreatePair,
   sameMovement,
+  withinAbsorptionWindow,
   type DetectionExisting,
   type PlannedOp,
   type PlanRow,
@@ -135,6 +136,18 @@ async function accountInEntity(supabase: SupabaseClient, userId: string, entityI
   return !!data
 }
 
+/** Por que uma transferência marcada na prévia não foi vinculada. */
+export type TransferSkipReason =
+  | 'counterpart_unavailable' // a perna/transação escolhida mudou ou sumiu desde a prévia
+  | 'account_not_in_entity'   // conta destino inativa, de outra entidade ou inexistente
+  | 'same_account'            // destino igual à conta importada
+
+export const TRANSFER_SKIP_REASON_LABEL: Record<TransferSkipReason, string> = {
+  counterpart_unavailable: 'a contraparte escolhida mudou ou foi removida desde a prévia',
+  account_not_in_entity: 'a conta destino está inativa ou não pertence à entidade ativa',
+  same_account: 'a conta destino é a própria conta importada',
+}
+
 /**
  * Grava uma linha importada como perna de transferência. Revalida a ação
  * contra o estado atual do banco (a prévia pode estar velha) e devolve
@@ -148,7 +161,7 @@ export async function applyImportTransfer(
   row: PlanRow,
   action: ImportTransferAction,
   newPairId: () => string,
-): Promise<{ result: 'linked' | 'absorbed' | 'duplicate' | 'skipped'; error: string | null }> {
+): Promise<{ result: 'linked' | 'absorbed' | 'duplicate' | 'skipped'; error: string | null; reason?: TransferSkipReason }> {
   const isOutflow = row.amount < 0
   const sameEntity = (t: TxDetectionRow) => !entityId || t.entity_id === entityId
 
@@ -159,8 +172,8 @@ export async function applyImportTransfer(
       legRow.account_id === row.accountId &&
       !legRow.import_hash && !legRow.bank_transaction_id &&
       legRow.is_mirror === !isOutflow &&
-      sameMovement(row.date, row.amount, legRow.date, Number(legRow.amount))
-    if (!ok) return { result: 'skipped', error: null }
+      withinAbsorptionWindow(row.date, row.amount, legRow.date, Number(legRow.amount))
+    if (!ok) return { result: 'skipped', error: null, reason: 'counterpart_unavailable' }
     return outcome(await executeTransferOps(supabase, userId, entityId, planAbsorb(row, legRow!.id, legRow!.transfer_pair_id!)), 'absorbed')
   }
 
@@ -172,16 +185,18 @@ export async function applyImportTransfer(
       e.account_id !== row.accountId &&
       sameMovement(row.date, row.amount, e.date, Number(e.amount)) &&
       await accountInEntity(supabase, userId, entityId, e.account_id) // conta da contraparte ativa
-    if (!ok) return { result: 'skipped', error: null }
+    if (!ok) return { result: 'skipped', error: null, reason: 'counterpart_unavailable' }
     return outcome(await executeTransferOps(
       supabase, userId, entityId,
       planConvert(row, { id: e!.id, accountId: e!.account_id, type: e!.type }, newPairId(), 'matched'),
     ), 'linked')
   }
 
-  if (action.counterpartAccountId === row.accountId ||
-      !(await accountInEntity(supabase, userId, entityId, action.counterpartAccountId))) {
-    return { result: 'skipped', error: null }
+  if (action.counterpartAccountId === row.accountId) {
+    return { result: 'skipped', error: null, reason: 'same_account' }
+  }
+  if (!(await accountInEntity(supabase, userId, entityId, action.counterpartAccountId))) {
+    return { result: 'skipped', error: null, reason: 'account_not_in_entity' }
   }
   return outcome(await executeTransferOps(
     supabase, userId, entityId,

@@ -16,6 +16,7 @@ import {
   planUnlink,
   planUnlinkPending,
   TRANSFER_DATE_TOLERANCE_DAYS,
+  ABSORPTION_DATE_TOLERANCE_DAYS,
   type DetectionAccount,
   type TransferDetection,
 } from '@/lib/import/transfer-detection'
@@ -102,11 +103,14 @@ export async function analyzeImportTransfers(
   const dates = rows.map(r => r.date).filter(Boolean).sort()
   if (dates.length === 0) return empty
 
+  // Janela da maior tolerância: a absorção de perna pendente aceita datas
+  // mais distantes que o Sinal A (que filtra a tolerância dele no motor).
+  const windowDays = Math.max(TRANSFER_DATE_TOLERANCE_DAYS, ABSORPTION_DATE_TOLERANCE_DAYS)
   const [accounts, existing] = await Promise.all([
     loadAccounts(supabase, userId, entityId),
     fetchTransactions(supabase, userId, entityId, q => q
-      .gte('date', addDays(dates[0], -TRANSFER_DATE_TOLERANCE_DAYS))
-      .lte('date', addDays(dates[dates.length - 1], TRANSFER_DATE_TOLERANCE_DAYS))),
+      .gte('date', addDays(dates[0], -windowDays))
+      .lte('date', addDays(dates[dates.length - 1], windowDays))),
   ])
 
   return detectTransfers(
@@ -437,4 +441,17 @@ export async function setTransferDestination(
   if (error) return { error }
   revalidateMoney()
   return { error: null }
+}
+
+// ─── Titular ──────────────────────────────────────────────────────────────────
+
+/**
+ * Identidade do titular para o sinal "titular" da prévia: o nome completo do
+ * perfil (Configurações › Perfil). O projeto não guarda CPF do titular.
+ */
+export async function getAccountHolder(): Promise<{ fullName: string | null; cpf: string | null }> {
+  const ctx = await getContext()
+  if (!ctx) return { fullName: null, cpf: null }
+  const { data } = await ctx.supabase.from('profiles').select('full_name').eq('id', ctx.userId).maybeSingle()
+  return { fullName: (data as { full_name: string | null } | null)?.full_name ?? null, cpf: null }
 }

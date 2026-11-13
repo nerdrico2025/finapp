@@ -5,7 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { generateImportHash } from '@/lib/import/import-hash'
-import { applyImportTransfer, type ImportTransferAction } from '@/lib/import/transfer-writes'
+import { applyImportTransfer, TRANSFER_SKIP_REASON_LABEL, type ImportTransferAction } from '@/lib/import/transfer-writes'
 import { buildTransferMirror } from '@/lib/import/transfer-detection'
 import { isUniqueViolation } from '@/lib/utils/db-errors'
 import { getUserPlanLimits } from '@/lib/plan-server'
@@ -709,6 +709,13 @@ export async function findImportDuplicates(
   return result
 }
 
+export interface TransferSkipped {
+  date: string
+  description: string
+  /** Motivo legível (TRANSFER_SKIP_REASON_LABEL). */
+  reason: string
+}
+
 export async function importTransactions(rows: CSVRow[]): Promise<{
   inserted: number
   duplicates: number
@@ -718,6 +725,11 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
   transfers: number
   /** Linhas absorvidas por uma perna já registrada — nenhuma linha nova. */
   absorbed: number
+  /**
+   * Linhas marcadas como transferência na prévia cujo par foi recusado no
+   * servidor — seguiram como receita/despesa (ou duplicata), sem categoria.
+   */
+  transferSkipped: TransferSkipped[]
 }> {
   const supabase = await createClient()
 
@@ -725,7 +737,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
     data: { user },
   } = await supabase.auth.getUser()
 
-  if (!user) return { inserted: 0, duplicates: 0, errors: 1, errorDetails: ['Não autenticado'], transfers: 0, absorbed: 0 }
+  if (!user) return { inserted: 0, duplicates: 0, errors: 1, errorDetails: ['Não autenticado'], transfers: 0, absorbed: 0, transferSkipped: [] }
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
@@ -735,6 +747,7 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
   let transfers = 0
   let absorbed = 0
   const errorDetails: string[] = []
+  const transferSkipped: TransferSkipped[] = []
 
   for (const row of rows) {
     try {
@@ -799,7 +812,13 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
         if (t.result === 'duplicate') { duplicates++; continue }
         if (t.result === 'absorbed') { absorbed++; continue }
         if (t.result === 'linked') { transfers++; continue }
-        // 'skipped': a contraparte mudou desde a prévia — segue como income/expense.
+        // 'skipped': o par não serve mais — segue como income/expense, mas o
+        // resumo da importação avisa (antes era silencioso).
+        transferSkipped.push({
+          date: row.date,
+          description: row.description,
+          reason: TRANSFER_SKIP_REASON_LABEL[t.reason ?? 'counterpart_unavailable'],
+        })
       }
 
       // O hash não inclui a conta: a busca é restrita à conta da linha, senão
@@ -859,5 +878,5 @@ export async function importTransactions(rows: CSVRow[]): Promise<{
     revalidatePath('/dashboard')
   }
 
-  return { inserted, duplicates, errors, errorDetails, transfers, absorbed }
+  return { inserted, duplicates, errors, errorDetails, transfers, absorbed, transferSkipped }
 }

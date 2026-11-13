@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import { getActiveEntityId } from '@/lib/entity'
 import { getUserPlanLimits } from '@/lib/plan-server'
-import type { AccountType } from '@/types'
+import type { Account, AccountType } from '@/types'
 import { computeTotalBalance } from '@/lib/accounts/balance'
 import { deletionBlockMessage, type AccountUsage } from '@/lib/accounts/usage'
 
@@ -97,7 +97,7 @@ export async function getTotalBalance() {
   return { total: computeTotalBalance(data), error: null }
 }
 
-export async function createAccount(formData: AccountFormData): Promise<{ error: string | null; feature?: string; message?: string }> {
+export async function createAccount(formData: AccountFormData): Promise<{ error: string | null; feature?: string; message?: string; account?: Account }> {
   const supabase = await createClient()
 
   const {
@@ -124,7 +124,7 @@ export async function createAccount(formData: AccountFormData): Promise<{ error:
 
   const entityId = await getActiveEntityId(supabase, user.id)
 
-  const { error } = await supabase.from('accounts').insert({
+  const { data: created, error } = await supabase.from('accounts').insert({
     user_id: user.id,
     entity_id: entityId,
     name: formData.name,
@@ -134,12 +134,12 @@ export async function createAccount(formData: AccountFormData): Promise<{ error:
     balance: formData.initial_balance,
     include_in_total: formData.include_in_total,
     is_active: true,
-  })
+  }).select('*').single()
 
   if (error) return { error: error.message }
 
   revalidatePath('/accounts')
-  return { error: null }
+  return { error: null, account: (created ?? undefined) as Account | undefined }
 }
 
 export async function updateAccount(id: string, formData: Partial<AccountFormData>) {

@@ -36,9 +36,11 @@ export const KEYWORD_RULES: Array<{ words: string[]; categoryPatterns: string[] 
   { words: ['agua', 'sabesp', 'sanepar', 'cedae', 'embasa', 'cagece', 'saneago', 'caema'], categoryPatterns: ['agua', 'contas', 'moradia', 'utilidades'] },
   { words: ['gas', 'comgas', 'naturgy', 'ultragaz', 'liquigas', 'supergasbrás'], categoryPatterns: ['gas', 'contas', 'moradia', 'utilidades'] },
   { words: ['internet', 'banda larga', 'net', 'vivo fibra', 'tim live', 'oi fibra', 'claro net', 'algar', 'brisanet', 'desktop'], categoryPatterns: ['telefonia e internet', 'internet', 'moradia', 'comunicacao'] },
-  { words: ['celular', 'recarga', 'tim', 'vivo', 'claro', 'oi', 'plano celular', 'plano movel', 'movel', 'telefone'], categoryPatterns: ['telefonia e internet', 'telefone', 'moradia', 'comunicacao'] },
+  { words: ['celular', 'recarga', 'tim', 'vivo', 'claro', 'oi', 'plano celular', 'plano movel', 'movel', 'telefone', 'telefonica', 'telecom'], categoryPatterns: ['telefonia e internet', 'telefone', 'moradia', 'comunicacao'] },
   { words: ['aluguel', 'condominio', 'iptu', 'alugar', 'locacao', 'imovel'], categoryPatterns: ['moradia', 'aluguel', 'condominio', 'habitacao'] },
   { words: ['escola', 'colegio', 'universidade', 'faculdade', 'curso', 'mensalidade', 'educacao', 'ensino', 'aula', 'ingles', 'idioma', 'livro', 'material escolar'], categoryPatterns: ['educacao', 'escola', 'ensino', 'curso'] },
+  // Antes da regra de empréstimo: boleto de consórcio também tem "boleto".
+  { words: ['consorcio'], categoryPatterns: ['consorcio', 'financiamento', 'divida', 'emprestimo'] },
   { words: ['emprestimo', 'financiamento', 'prestacao', 'parcela', 'boleto', 'divida', 'credito', 'juros', 'tarifa bancaria'], categoryPatterns: ['divida', 'emprestimo', 'financiamento', 'credito'] },
   { words: ['salario', 'vencimento', 'honorarios', 'freelance', 'pgto', 'pag recebido', 'deposito recebido'], categoryPatterns: ['salario', 'receita', 'renda', 'trabalho'] },
   { words: ['dividendo', 'rendimento', 'cdb', 'lci', 'lca', 'fundo', 'acoes', 'tesouro direto', 'fiis', 'fii', 'debênture', 'debenture', 'juros sobre capital', 'jcp', 'provento', 'cupom'], categoryPatterns: ['rendimentos de investimentos', 'rendimento', 'investimento'] },
@@ -182,4 +184,96 @@ export function coreFingerprint(description: string): string {
     .replace(/\b\d+\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+// ─── Modelo da IA ─────────────────────────────────────────────────────────────
+
+// Modelo padrão: google/gemini-2.5-flash-lite — o Gemini Flash/Flash-Lite
+// estável mais barato do catálogo da OpenRouter em 11/2026 (US$0,10 / 1M
+// tokens de entrada, US$0,40 / 1M de saída). Classificação curta (escolher 1
+// de N categorias) não precisa de modelo maior. O modelo anterior
+// (gemini-flash-1.5-8b) saiu do catálogo e derrubou a IA sem ninguém notar —
+// por isso o id é configurável por OPENROUTER_MODEL e a falha volta para a
+// prévia (ver AiFailure).
+export const DEFAULT_OPENROUTER_MODEL = 'google/gemini-2.5-flash-lite'
+
+// ─── Falhas da IA ─────────────────────────────────────────────────────────────
+
+export type AiFailureReason =
+  | 'no_key'
+  | 'unauthorized'
+  | 'no_credits'
+  | 'model_not_found'
+  | 'rate_limited'
+  | 'http_error'
+  | 'timeout'
+  | 'invalid_response'
+  | 'network'
+
+export interface AiFailure {
+  reason: AiFailureReason
+  /** Status HTTP, quando a OpenRouter respondeu. */
+  status?: number
+}
+
+/** Classifica uma resposta HTTP não-OK da OpenRouter. */
+export function classifyAiHttpFailure(status: number, body = ''): AiFailure {
+  if (status === 401 || status === 403) return { reason: 'unauthorized', status }
+  if (status === 402) return { reason: 'no_credits', status }
+  if (status === 404) return { reason: 'model_not_found', status }
+  // A OpenRouter responde 400 "… is not a valid model ID" para modelo removido.
+  if (status === 400 && /model/i.test(body)) return { reason: 'model_not_found', status }
+  if (status === 429) return { reason: 'rate_limited', status }
+  return { reason: 'http_error', status }
+}
+
+/** Classifica uma exceção da chamada (timeout, rede, JSON inválido). */
+export function classifyAiException(err: unknown): AiFailure {
+  const name = err instanceof Error ? err.name : ''
+  if (name === 'TimeoutError' || name === 'AbortError') return { reason: 'timeout' }
+  if (err instanceof SyntaxError) return { reason: 'invalid_response' }
+  return { reason: 'network' }
+}
+
+/** Motivo curto, para a faixa da prévia ("… indisponível (<motivo>)"). */
+export function aiFailureLabel(f: AiFailure): string {
+  switch (f.reason) {
+    case 'no_key': return 'chave da OpenRouter não configurada'
+    case 'unauthorized': return `chave recusada, HTTP ${f.status ?? 401}`
+    case 'no_credits': return 'sem créditos na OpenRouter, HTTP 402'
+    case 'model_not_found': return `modelo não encontrado, HTTP ${f.status ?? 404}`
+    case 'rate_limited': return 'limite de requisições, HTTP 429'
+    case 'http_error': return `erro da OpenRouter, HTTP ${f.status ?? '?'}`
+    case 'timeout': return 'tempo esgotado'
+    case 'invalid_response': return 'resposta inválida'
+    case 'network': return 'falha de rede'
+  }
+}
+
+// ─── Regras aprendidas por entidade ───────────────────────────────────────────
+
+export interface StoredRule {
+  id: string
+  entity_id: string | null
+  category_id: string
+  match_count: number
+  confirm_count: number | null
+}
+
+/**
+ * Escolhe a regra aplicável à entidade ativa: a da própria entidade vence; sem
+ * ela, vale a regra legada global (entity_id NULL, de antes das regras por
+ * entidade). Regras de outra entidade nunca valem.
+ */
+export function chooseRule<R extends Pick<StoredRule, 'entity_id'>>(rules: R[], entityId: string | null): R | null {
+  if (entityId) {
+    const own = rules.find((r) => r.entity_id === entityId)
+    if (own) return own
+  }
+  return rules.find((r) => r.entity_id === null) ?? null
+}
+
+/** Ids que podem ser sugeridos: os do dropdown, já filtrados pelo tipo da linha. */
+export function allowedCategoryIds(categories: CategoryOption[], type?: 'income' | 'expense'): Set<string> {
+  return new Set(categories.filter((c) => !type || c.type === type).map((c) => c.id))
 }

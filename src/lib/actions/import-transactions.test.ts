@@ -109,3 +109,76 @@ describe('violação de unicidade (23505)', () => {
     expect(res.error).not.toContain('duplicate key')
   })
 })
+
+// ─── Pares recusados no servidor ──────────────────────────────────────────────
+
+describe('importTransactions — transferência recusada aparece no resumo', () => {
+  it('conta destino de outra entidade: entra como receita/despesa e é listada com o motivo', async () => {
+    fake.tables.accounts.push({ id: 'acc-pj', user_id: 'user-1', is_active: true, entity_id: 'entity-pj' })
+    const res = await importTransactions([{
+      ...line, description: 'PIX JOAO', account_id: 'acc-itau',
+      transfer: { kind: 'createPair', counterpartAccountId: 'acc-pj' },
+    }])
+    expect(res).toMatchObject({ inserted: 1, transfers: 0 })
+    expect(res.transferSkipped).toEqual([{
+      date: line.date, description: 'PIX JOAO',
+      reason: 'a conta destino está inativa ou não pertence à entidade ativa',
+    }])
+    expect(fake.tables.transactions[0]).toMatchObject({ type: 'expense', category_id: null })
+  })
+
+  it('contraparte que sumiu desde a prévia', async () => {
+    const res = await importTransactions([{
+      ...line, account_id: 'acc-itau', transfer: { kind: 'convert', existingId: 'nao-existe' },
+    }])
+    expect(res.transferSkipped).toHaveLength(1)
+    expect(res.transferSkipped[0].reason).toMatch(/mudou ou foi removida/)
+  })
+
+  it('par vinculado não entra na lista', async () => {
+    fake.tables.accounts.push({ id: 'acc-nubank', user_id: 'user-1', is_active: true, entity_id: 'entity-1' })
+    const res = await importTransactions([{
+      ...line, account_id: 'acc-itau', transfer: { kind: 'createPair', counterpartAccountId: 'acc-nubank' },
+    }])
+    expect(res).toMatchObject({ transfers: 1, transferSkipped: [] })
+  })
+})
+
+// ─── Absorção com data diferente ──────────────────────────────────────────────
+
+describe('importTransactions — absorção de perna pendente com data diferente', () => {
+  function seedPendingLeg(date: string) {
+    fake.tables.transactions.push(
+      { id: 'leg-sic', user_id: 'user-1', entity_id: 'entity-1', account_id: 'acc-sicredi', type: 'transfer', amount: 1000, date,
+        description: 'PAGAMENTO PIX - JOAO', transfer_pair_id: 'p1', is_mirror: false, destination_account_id: 'acc-btg',
+        import_hash: 'h-sicredi', bank_transaction_id: null, transfer_status: 'pending' },
+      { id: 'leg-btg', user_id: 'user-1', entity_id: 'entity-1', account_id: 'acc-btg', type: 'transfer', amount: 1000, date,
+        description: 'PAGAMENTO PIX - JOAO', transfer_pair_id: 'p1', is_mirror: true, destination_account_id: 'acc-sicredi',
+        import_hash: null, bank_transaction_id: null, transfer_status: 'pending' },
+    )
+  }
+
+  it('3 dias: absorve, a perna do BTG passa para a data do extrato e o par é confirmado', async () => {
+    seedPendingLeg('2026-11-03')
+    const res = await importTransactions([{
+      date: '2026-10-31', description: 'PIX RECEBIDO JOAO', amount: 1000, account_id: 'acc-btg',
+      transfer: { kind: 'absorb', legId: 'leg-btg' },
+    }])
+    expect(res).toMatchObject({ absorbed: 1, inserted: 0, transferSkipped: [] })
+    const legBtg = fake.tables.transactions.find(t => t.id === 'leg-btg')!
+    const legSic = fake.tables.transactions.find(t => t.id === 'leg-sic')!
+    expect(legBtg).toMatchObject({ date: '2026-10-31', transfer_status: 'matched' })
+    expect(legBtg.import_hash).toBeTruthy()
+    expect(legSic).toMatchObject({ date: '2026-11-03', transfer_status: 'matched' })
+  })
+
+  it('4 dias: o servidor recusa a absorção e a linha aparece no resumo', async () => {
+    seedPendingLeg('2026-11-03')
+    const res = await importTransactions([{
+      date: '2026-10-30', description: 'PIX RECEBIDO JOAO', amount: 1000, account_id: 'acc-btg',
+      transfer: { kind: 'absorb', legId: 'leg-btg' },
+    }])
+    expect(res).toMatchObject({ absorbed: 0, inserted: 1 })
+    expect(res.transferSkipped).toHaveLength(1)
+  })
+})

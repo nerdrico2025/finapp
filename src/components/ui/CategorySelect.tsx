@@ -1,8 +1,9 @@
 'use client'
 
 import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
-import { ChevronDown, Check, Search, Plus } from 'lucide-react'
+import { ChevronDown, Check, Search, Plus, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils/cn'
+import { computeMenuPosition, type MenuPosition } from '@/lib/ui/menu-position'
 import type { Category } from '@/types'
 
 interface Props {
@@ -15,10 +16,19 @@ interface Props {
   selectableParents?: boolean
   /** Compact trigger for dense contexts like the import table rows. */
   compact?: boolean
-  /** Optional "create new" action shown at the bottom of the list. */
-  onCreateNew?: () => void
+  /**
+   * Habilita "Nova categoria" no rodapé do menu. O formulário abre dentro do
+   * próprio menu (nome pré-preenchido com a busca); devolva true quando a
+   * categoria foi criada (o menu fecha) e false para manter o formulário
+   * aberto (erro já avisado pelo chamador).
+   */
+  onCreate?: (input: { name: string; color: string }) => Promise<boolean>
   createNewLabel?: string
+  /** Tipo da categoria criada — só para o rótulo do formulário. */
+  createType?: 'income' | 'expense'
 }
+
+export const NEW_CATEGORY_COLORS = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4', '#6b7280', '#9ca3af'] as const
 
 export function buildCategoryTree(categories: Category[]) {
   const byId = new Map(categories.map((c) => [c.id, c]))
@@ -42,14 +52,6 @@ function normalize(s: string): string {
     .trim()
 }
 
-interface MenuPos {
-  top?: number
-  bottom?: number
-  left: number
-  width: number
-  maxHeight: number
-}
-
 // Largura mínima do menu aberto, independente da largura do trigger que o
 // abre — calibrada para acomodar os labels mais longos do conjunto padrão de
 // categorias (ex. "Restaurantes e lanchonetes") em até 2 linhas legíveis.
@@ -64,12 +66,15 @@ export function CategorySelect({
   allowEmpty = true,
   selectableParents = false,
   compact = false,
-  onCreateNew,
+  onCreate,
   createNewLabel = '+ Nova categoria',
+  createType,
 }: Props) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const [pos, setPos] = useState<MenuPos | null>(null)
+  const [pos, setPos] = useState<MenuPosition | null>(null)
+  /** Formulário de nova categoria aberto dentro do menu. */
+  const [creating, setCreating] = useState<{ name: string; color: string; saving: boolean } | null>(null)
   const ref = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -107,54 +112,46 @@ export function CategorySelect({
   }, [filtered, childrenByParent, selectableParents])
 
   // ── Positioning (fixed, so it escapes parent overflow like the import table) ─
+  const hasFooter = !!onCreate && !creating
   const updatePosition = useCallback(() => {
     const el = triggerRef.current
     if (!el) return
-    const r = el.getBoundingClientRect()
-    const spaceBelow = window.innerHeight - r.bottom
-    const spaceAbove = r.top
-    const openUp = spaceBelow < 280 && spaceAbove > spaceBelow
-    const maxHeight = Math.min(320, (openUp ? spaceAbove : spaceBelow) - 12)
-    // O menu nunca fica mais estreito que o trigger, mas também nunca mais
-    // estreito que MIN_MENU_WIDTH — em contextos compactos (ex.: a coluna de
-    // categoria da tabela de importação) o trigger tem só ~100px, largura
-    // insuficiente pra labels como "Restaurante e lanchonete" ou o cabeçalho
-    // "ALIMENTAÇÃO" mesmo quebrando linha. O menu precisa da própria largura
-    // mínima, independente de quão estreito for o elemento que o abre.
-    const width = Math.max(r.width, MIN_MENU_WIDTH)
-    // Não deixa o menu (agora possivelmente mais largo que o trigger) vazar
-    // pra fora da viewport à direita.
-    const left = Math.min(r.left, Math.max(8, window.innerWidth - width - 8))
-    setPos({
-      ...(openUp
-        ? { bottom: window.innerHeight - r.top + 4 }
-        : { top: r.bottom + 4 }),
-      left,
-      width,
-      maxHeight,
-    })
-  }, [])
+    // O menu nunca fica mais estreito que MIN_MENU_WIDTH (em contextos
+    // compactos o trigger tem só ~100px); busca e rodapé sempre cabem na tela
+    // (ver computeMenuPosition).
+    setPos(computeMenuPosition(
+      el.getBoundingClientRect(),
+      { width: window.innerWidth, height: window.innerHeight },
+      { minWidth: MIN_MENU_WIDTH, hasFooter },
+    ))
+  }, [hasFooter])
 
   useEffect(() => {
     if (!open) return
     updatePosition()
-    const t = setTimeout(() => searchRef.current?.focus(), 0)
     function onScroll() { updatePosition() }
     function onClick(e: MouseEvent) {
       const target = e.target as Node
       if (ref.current?.contains(target) || menuRef.current?.contains(target)) return
       setOpen(false)
+      setCreating(null)
     }
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', onScroll)
     document.addEventListener('mousedown', onClick)
     return () => {
-      clearTimeout(t)
       window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('resize', onScroll)
       document.removeEventListener('mousedown', onClick)
     }
   }, [open, updatePosition])
+
+  // Foco na busca só ao abrir (não ao trocar lista ↔ formulário).
+  useEffect(() => {
+    if (!open) return
+    const t = setTimeout(() => searchRef.current?.focus(), 0)
+    return () => clearTimeout(t)
+  }, [open])
 
   function toggle() {
     setOpen((o) => {
@@ -162,6 +159,24 @@ export function CategorySelect({
       if (next) setQuery('')
       return next
     })
+    setCreating(null)
+  }
+
+  async function saveNew() {
+    if (!onCreate || !creating || creating.saving) return
+    setCreating((c) => (c ? { ...c, saving: true } : c))
+    let ok = false
+    try {
+      ok = await onCreate({ name: creating.name.trim(), color: creating.color })
+    } catch {
+      ok = false
+    }
+    if (ok) {
+      setCreating(null)
+      setOpen(false)
+    } else {
+      setCreating((c) => (c ? { ...c, saving: false } : c))
+    }
   }
 
   function select(id: string) {
@@ -216,6 +231,7 @@ export function CategorySelect({
               <input
                 ref={searchRef}
                 value={query}
+                disabled={!!creating}
                 onChange={(e) => setQuery(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') { e.preventDefault(); setOpen(false) }
@@ -231,6 +247,55 @@ export function CategorySelect({
           </div>
 
           <div className="overflow-y-auto" style={{ maxHeight: pos.maxHeight }}>
+            {creating ? (
+              <div className="p-3 space-y-2">
+                <p className="text-xs font-medium text-gray-600">
+                  {createType === 'income' ? 'Nova categoria de receita' : createType === 'expense' ? 'Nova categoria de despesa' : 'Nova categoria'}
+                </p>
+                <input
+                  autoFocus
+                  placeholder="Nome da categoria"
+                  value={creating.name}
+                  disabled={creating.saving}
+                  onChange={(e) => setCreating((c) => (c ? { ...c, name: e.target.value } : c))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') { e.preventDefault(); saveNew() }
+                    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setCreating(null); setTimeout(() => searchRef.current?.focus(), 0) }
+                  }}
+                  className="w-full px-2.5 py-1.5 border border-gray-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+                <div className="flex gap-1.5">
+                  {NEW_CATEGORY_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      aria-label={`Cor ${color}`}
+                      onClick={() => setCreating((c) => (c ? { ...c, color } : c))}
+                      className={cn('w-5 h-5 rounded-full transition-transform', creating.color === color && 'ring-2 ring-offset-1 ring-gray-400 scale-110')}
+                      style={{ backgroundColor: color }}
+                    />
+                  ))}
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <button
+                    type="button"
+                    onClick={() => { setCreating(null); setTimeout(() => searchRef.current?.focus(), 0) }}
+                    className="px-3 py-1 text-xs text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg bg-white"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveNew}
+                    disabled={creating.saving}
+                    className="flex items-center gap-1 px-3 py-1 text-xs font-medium text-white bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 rounded-lg"
+                  >
+                    {creating.saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <Plus className="w-3 h-3" />}
+                    Salvar
+                  </button>
+                </div>
+              </div>
+            ) : (<>
             {showEmpty && (
               <button
                 type="button"
@@ -301,12 +366,13 @@ export function CategorySelect({
             {filtered.length === 0 && !showEmpty && (
               <p className="px-3 py-4 text-sm text-gray-500 text-center">Nenhuma categoria encontrada</p>
             )}
+            </>)}
           </div>
 
-          {onCreateNew && (
+          {hasFooter && (
             <button
               type="button"
-              onClick={() => { onCreateNew(); setOpen(false) }}
+              onClick={() => setCreating({ name: query.trim(), color: '#6b7280', saving: false })}
               className="w-full text-left px-3 py-2.5 text-sm text-emerald-600 hover:bg-emerald-50 flex items-center gap-1.5 border-t border-gray-100 font-medium"
             >
               <Plus className="w-3.5 h-3.5" />

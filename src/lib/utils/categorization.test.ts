@@ -8,6 +8,11 @@ import {
   isNoAutoCategory,
   MIN_CATEGORY_NAME_MATCH_LENGTH,
   MIN_FINGERPRINT_LENGTH,
+  classifyAiHttpFailure,
+  classifyAiException,
+  aiFailureLabel,
+  chooseRule,
+  allowedCategoryIds,
   type CategoryOption,
 } from './categorization'
 
@@ -224,5 +229,70 @@ describe('isNoAutoCategory', () => {
     expect(isNoAutoCategory('Integralização de capital')).toBe(true)
     expect(isNoAutoCategory('PAGAMENTO PIX - CAPITAL')).toBe(false)
     expect(keywordFallback('INTEGRALIZACAO DE CAPITAL POR DEBITO EM CONTA', DEFAULT_CATEGORIES)).toBeNull()
+  })
+})
+
+describe('falhas da IA', () => {
+  it('classifica status HTTP', () => {
+    expect(classifyAiHttpFailure(401)).toEqual({ reason: 'unauthorized', status: 401 })
+    expect(classifyAiHttpFailure(402)).toEqual({ reason: 'no_credits', status: 402 })
+    expect(classifyAiHttpFailure(404)).toEqual({ reason: 'model_not_found', status: 404 })
+    expect(classifyAiHttpFailure(400, 'google/x is not a valid model ID')).toEqual({ reason: 'model_not_found', status: 400 })
+    expect(classifyAiHttpFailure(400, 'bad request')).toEqual({ reason: 'http_error', status: 400 })
+    expect(classifyAiHttpFailure(429)).toEqual({ reason: 'rate_limited', status: 429 })
+  })
+
+  it('classifica exceções', () => {
+    expect(classifyAiException(new DOMException('t', 'TimeoutError'))).toEqual({ reason: 'timeout' })
+    expect(classifyAiException(new SyntaxError('x'))).toEqual({ reason: 'invalid_response' })
+    expect(classifyAiException(new TypeError('fetch failed'))).toEqual({ reason: 'network' })
+  })
+
+  it('motivo curto', () => {
+    expect(aiFailureLabel({ reason: 'model_not_found', status: 404 })).toBe('modelo não encontrado, HTTP 404')
+    expect(aiFailureLabel({ reason: 'no_key' })).toBe('chave da OpenRouter não configurada')
+  })
+})
+
+describe('chooseRule', () => {
+  const own = { entity_id: 'ent-pf' }
+  const legacy = { entity_id: null }
+  const other = { entity_id: 'ent-pj' }
+  it('prefere a da entidade, depois a legada; nunca a de outra entidade', () => {
+    expect(chooseRule([legacy, own], 'ent-pf')).toBe(own)
+    expect(chooseRule([other, legacy], 'ent-pf')).toBe(legacy)
+    expect(chooseRule([other], 'ent-pf')).toBeNull()
+    expect(chooseRule([own, legacy], null)).toBe(legacy)
+  })
+})
+
+describe('allowedCategoryIds', () => {
+  it('filtra pelo tipo da linha', () => {
+    const cats: CategoryOption[] = [
+      { id: 'a', name: 'A', type: 'expense', icon: null, parent_id: null },
+      { id: 'b', name: 'B', type: 'income', icon: null, parent_id: null },
+    ]
+    expect(Array.from(allowedCategoryIds(cats, 'income'))).toEqual(['b'])
+    expect(allowedCategoryIds(cats).size).toBe(2)
+  })
+})
+
+describe('palavras-chave novas: telefonica, telecom, consorcio', () => {
+  const cats: CategoryOption[] = [
+    { id: 'moradia', name: 'Moradia', type: 'expense', icon: null, parent_id: null },
+    { id: 'telefonia', name: 'Telefonia e internet', type: 'expense', icon: null, parent_id: 'moradia' },
+    { id: 'financas', name: 'Finanças e Dívidas', type: 'expense', icon: null, parent_id: null },
+    { id: 'consorcio', name: 'Consórcio', type: 'expense', icon: null, parent_id: 'financas' },
+  ]
+  it.each([
+    ['PAGAMENTO PIX - 10000000001111 TELEFONICA EXEMPLO', 'telefonia'],
+    ['PAGAMENTO PIX - 10000000000202 TELECOM EXEMPLO', 'telefonia'],
+    ['DEBITO TELECOMUNICACOES XYZ', 'telefonia'],
+    ['PAGAMENTO BOLETO - 10000000000707 ADMINISTRADORA DE CONSORCIO EXEMPLO LTDA', 'consorcio'],
+  ])('%s → %s', (desc, expected) => {
+    expect(keywordFallback(desc, cats, 'expense')).toBe(expected)
+  })
+  it('sem subcategoria Consórcio, consórcio cai em Finanças e Dívidas', () => {
+    expect(keywordFallback('BOLETO CONSORCIO X', cats.filter(c => c.id !== 'consorcio'), 'expense')).toBe('financas')
   })
 })
