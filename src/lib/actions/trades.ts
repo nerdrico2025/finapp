@@ -11,13 +11,22 @@ import {
   type OptionExpiryNotice,
 } from '@/lib/options/calc'
 import { getOptionTargetNotices, validateTarget, type OptionTargetNotice } from '@/lib/options/target'
+import { buildPartialClose, type ClosedTradeRow } from '@/lib/options/partial-close'
 import type { OptionPosition, OptionStatus, TradeOperation } from '@/types'
 
 export type TradeType = 'swing' | 'options'
 export type TradeStatus = 'open' | 'closed'
 
 export type CloseOptionData =
-  | { outcome: 'closed'; exit_premium: number; exit_date: string }
+  | {
+      outcome: 'closed'
+      exit_premium: number
+      exit_date: string
+      /** Ausente ou igual à quantidade em aberto: encerramento total. */
+      closed_quantity?: number
+      /** Taxas da saída, somadas às taxas da parte encerrada. */
+      exit_fees?: number
+    }
   | { outcome: 'exercised'; underlying_price: number; exit_date: string }
   | { outcome: 'expired'; exit_date: string }
 
@@ -262,10 +271,15 @@ export async function updateCurrentPremium(
   return { error: null, updatedAt }
 }
 
+export type CloseOptionResult =
+  | { error: string; partial?: undefined }
+  | { error: null; partial: null; fees: number }
+  | { error: null; partial: { closedTrade: TradeOperation; remaining: { quantity: number; fees: number } } }
+
 export async function closeOption(
   id: string,
   close: CloseOptionData,
-): Promise<{ error: string | null }> {
+): Promise<CloseOptionResult> {
   if (!close.exit_date) return { error: 'Informe a data de encerramento.' }
   if (close.outcome === 'closed' && !(close.exit_premium >= 0)) return { error: 'Informe o prêmio de saída.' }
   if (close.outcome === 'exercised' && !(close.underlying_price > 0)) return { error: 'Informe o preço da ação no exercício.' }
@@ -275,12 +289,35 @@ export async function closeOption(
   const { data: { user } } = await supabase.auth.getUser()
   if (!user) return { error: 'Não autenticado' }
 
-  const { data: events } = await supabase
+  const { data: current } = await supabase
     .from('trade_operations')
-    .select('google_event_id, google_reminder_event_id')
+    .select('*')
     .eq('id', id)
     .eq('user_id', user.id)
+    .eq('type', 'options')
+    .eq('option_status', 'open')
     .maybeSingle()
+
+  if (!current) return { error: 'Operação não encontrada ou já encerrada.' }
+  const trade = current as TradeOperation
+
+  let fees = trade.fees
+  if (close.outcome === 'closed') {
+    let plan
+    try {
+      plan = buildPartialClose({
+        trade,
+        closedQuantity: close.closed_quantity ?? trade.quantity,
+        exitPremium: close.exit_premium,
+        exitDate: close.exit_date,
+        exitFees: close.exit_fees ?? 0,
+      })
+    } catch (e) {
+      return { error: (e as Error).message }
+    }
+    if (plan.remainingRow) return closeOptionPartially(supabase, user.id, trade, plan.closedRow, plan.remainingRow)
+    fees = plan.closedRow.fees
+  }
 
   const { data, error } = await supabase
     .from('trade_operations')
@@ -290,6 +327,7 @@ export async function closeOption(
       exit_date: close.exit_date,
       exit_price: close.outcome === 'closed' ? close.exit_premium : null,
       underlying_price_at_exercise: close.outcome === 'exercised' ? close.underlying_price : null,
+      fees,
       google_event_id: null,
       google_reminder_event_id: null,
     })
@@ -302,10 +340,63 @@ export async function closeOption(
 
   if (error) return { error: error.message }
   if (!data) return { error: 'Operação não encontrada ou já encerrada.' }
-  if (events) await removeExpiryEvents(user.id, events)
+  await removeExpiryEvents(user.id, trade)
 
   revalidatePath('/', 'layout')
-  return { error: null }
+  return { error: null, partial: null, fees }
+}
+
+/**
+ * Sem transação no PostgREST: insere a parte encerrada e só então reduz a
+ * original. A redução exige que a operação siga aberta com a mesma quantidade
+ * lida; se falhar, a linha inserida é apagada e o banco volta ao estado
+ * anterior. Os eventos do Calendar ficam com a operação aberta.
+ */
+async function closeOptionPartially(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+  original: TradeOperation,
+  closedRow: ClosedTradeRow,
+  remainingRow: TradeOperation,
+): Promise<CloseOptionResult> {
+  const { data: inserted, error: insertError } = await supabase
+    .from('trade_operations')
+    .insert(closedRow)
+    .select('*')
+    .single()
+
+  if (insertError || !inserted) return { error: insertError?.message ?? 'Não foi possível encerrar a operação.' }
+
+  const { data: reduced, error: updateError } = await supabase
+    .from('trade_operations')
+    .update({ quantity: remainingRow.quantity, fees: remainingRow.fees })
+    .eq('id', original.id)
+    .eq('user_id', userId)
+    .eq('option_status', 'open')
+    .eq('quantity', original.quantity)
+    .select('id')
+    .maybeSingle()
+
+  if (updateError || !reduced) {
+    const { error: rollbackError } = await supabase
+      .from('trade_operations')
+      .delete()
+      .eq('id', inserted.id)
+      .eq('user_id', userId)
+    if (rollbackError) {
+      return { error: `Falha ao encerrar e ao desfazer: confira a operação ${original.option_series ?? original.ticker}.` }
+    }
+    return { error: updateError?.message ?? 'A operação mudou enquanto era encerrada. Recarregue e tente de novo.' }
+  }
+
+  revalidatePath('/', 'layout')
+  return {
+    error: null,
+    partial: {
+      closedTrade: inserted as TradeOperation,
+      remaining: { quantity: remainingRow.quantity, fees: remainingRow.fees },
+    },
+  }
 }
 
 export async function getExpiringOptions(): Promise<OptionExpiryNotice[]> {
