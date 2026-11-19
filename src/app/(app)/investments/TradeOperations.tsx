@@ -15,8 +15,8 @@ import {
 import {
   computeOption, optionInputFromTrade, validateOption, summarizeOptions,
   daysBetween, todayInBrazil, parseDecimal,
-  type OptionInput,
 } from '@/lib/options/calc'
+import { buildPartialClose, validateClosedQuantity } from '@/lib/options/partial-close'
 import type { VisibleTradeTypes } from '@/lib/options/visible-trade-types'
 import { buildTradesView, type PartialSummary } from '@/lib/options/partial-summary'
 import { describePartial, hasWriterPartial, partialReturnPct } from '@/lib/options/period-summary'
@@ -423,8 +423,19 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
 
   function handleCloseOption(id: string, data: CloseOptionData) {
     startTransition(async () => {
-      const { error } = await closeOption(id, data)
-      if (error) { toast.error(error); return }
+      const res = await closeOption(id, data)
+      if (res.error != null) { toast.error(res.error); return }
+      if (res.partial) {
+        const { closedTrade, remaining } = res.partial
+        setTrades((prev) => [
+          closedTrade,
+          ...prev.map((t) => t.id === id ? { ...t, ...remaining } : t),
+        ])
+        closeClosingModal()
+        toast.success(`Encerramento parcial registrado. Ficam abertas: ${remaining.quantity.toLocaleString('pt-BR')} opções`)
+        return
+      }
+      const fees = res.fees
       setTrades((prev) => prev.map((t) => t.id === id
         ? {
             ...t,
@@ -433,6 +444,7 @@ export function TradeOperations({ initialTrades, visibleTradeTypes, closeOptionI
             exit_date: data.exit_date,
             exit_price: data.outcome === 'closed' ? data.exit_premium : null,
             underlying_price_at_exercise: data.outcome === 'exercised' ? data.underlying_price : null,
+            fees,
             google_event_id: null,
             google_reminder_event_id: null,
           }
@@ -1465,17 +1477,37 @@ function CloseOptionForm({ trade, isPending, onSubmit, onClose }: {
   const [exitPremium, setExitPremium] = useState('')
   const [exitDate, setExitDate] = useState(todayBr)
   const [underlyingPrice, setUnderlyingPrice] = useState('')
+  const [closedQtyRaw, setClosedQtyRaw] = useState(String(trade.quantity))
+  const [exitFeesRaw, setExitFeesRaw] = useState('')
 
-  const input: OptionInput = {
+  const closedQty = parseDecimal(closedQtyRaw)
+  const exitFees = exitFeesRaw ? parseNum(exitFeesRaw) : 0
+  const qtyCheck = validateClosedQuantity(closedQty, trade.quantity)
+  const remainingQty = trade.quantity - closedQty
+
+  // "Encerrei antes do vencimento" usa a função pura, que cobre o total e o parcial.
+  const closedPlan = useMemo(() => {
+    if (outcome !== 'closed' || !exitPremium || qtyCheck.error || !(exitFees >= 0)) return null
+    try {
+      return buildPartialClose({ trade, closedQuantity: closedQty, exitPremium: parseNum(exitPremium), exitDate, exitFees })
+    } catch {
+      return null
+    }
+  }, [outcome, exitPremium, qtyCheck.error, exitFees, trade, closedQty, exitDate])
+
+  const otherResult = outcome === 'closed' ? null : computeOption({
     ...optionInputFromTrade(trade),
     status: outcome,
-    exitPremium: outcome === 'closed' && exitPremium ? parseNum(exitPremium) : null,
+    exitPremium: null,
     underlyingPriceAtExercise: outcome === 'exercised' && underlyingPrice ? parseNum(underlyingPrice) : null,
-  }
-  const c = computeOption(input)
+  }).result
+  const result = outcome === 'closed' ? closedPlan?.resultado ?? null : otherResult
+  const isPartial = closedPlan?.remainingRow != null
 
   function confirm() {
-    if (outcome === 'closed') onSubmit({ outcome, exit_premium: parseNum(exitPremium), exit_date: exitDate })
+    if (outcome === 'closed') {
+      onSubmit({ outcome, exit_premium: parseNum(exitPremium), exit_date: exitDate, closed_quantity: closedQty, exit_fees: exitFees })
+    }
     else if (outcome === 'exercised') onSubmit({ outcome, underlying_price: parseNum(underlyingPrice), exit_date: expiryOrToday })
     else onSubmit({ outcome, exit_date: trade.expiration_date ?? todayBr })
   }
@@ -1509,6 +1541,18 @@ function CloseOptionForm({ trade, isPending, onSubmit, onClose }: {
           <FormRow label="Data *">
             <input type="date" value={exitDate} onChange={(e) => setExitDate(e.target.value)} className={inputCls} />
           </FormRow>
+          <FormRow label="Quantidade encerrada *">
+            <input type="text" inputMode="numeric" value={closedQtyRaw} onChange={(e) => setClosedQtyRaw(e.target.value)} className={inputCls} />
+          </FormRow>
+          <FormRow label="Taxas da saída (R$)">
+            <input type="text" inputMode="decimal" value={exitFeesRaw} onChange={(e) => setExitFeesRaw(e.target.value)} className={inputCls} placeholder="0,00" />
+          </FormRow>
+          {qtyCheck.error && <p className="col-span-2 text-xs text-red-600">{qtyCheck.error}</p>}
+          {!qtyCheck.error && qtyCheck.warning && (
+            <p className="col-span-2 text-xs text-amber-700 flex gap-1.5">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />{qtyCheck.warning}
+            </p>
+          )}
         </div>
       )}
       {outcome === 'exercised' && (
@@ -1521,10 +1565,17 @@ function CloseOptionForm({ trade, isPending, onSubmit, onClose }: {
           </p>
         </>
       )}
-      {c.result != null && <ResultPreview label="Resultado calculado" result={c.result} />}
+      {result != null && (
+        <ResultPreview
+          label={isPartial ? `Resultado da parte encerrada (${closedQty.toLocaleString('pt-BR')} opções)` : 'Resultado calculado'}
+          result={result}
+          returnPct={outcome === 'closed' ? closedPlan?.rentabilidade ?? null : null}
+          footer={isPartial ? `Ficam abertas: ${remainingQty.toLocaleString('pt-BR')} opções` : undefined}
+        />
+      )}
       <ModalActions
-        confirmLabel="Confirmar encerramento"
-        disabled={isPending || c.result == null || (outcome === 'closed' && !exitDate)}
+        confirmLabel={isPartial ? 'Confirmar encerramento parcial' : 'Confirmar encerramento'}
+        disabled={isPending || result == null || (outcome === 'closed' && (!exitDate || !!qtyCheck.error))}
         onConfirm={confirm}
         onClose={onClose}
       />
@@ -1532,13 +1583,24 @@ function CloseOptionForm({ trade, isPending, onSubmit, onClose }: {
   )
 }
 
-function ResultPreview({ label, result }: { label: string; result: number }) {
+function ResultPreview({ label, result, returnPct, footer }: {
+  label: string
+  result: number
+  returnPct?: number | null
+  footer?: string
+}) {
   return (
     <div className="bg-gray-50 rounded-xl p-3 text-xs">
       <p className="text-gray-400 mb-0.5">{label}</p>
       <p className={cn('text-sm font-semibold tabular-nums', result >= 0 ? 'text-emerald-600' : 'text-red-600')}>
         {(result >= 0 ? '+' : '') + formatCurrency(result)}
+        {returnPct != null && (
+          <span className="ml-2 text-xs font-medium">
+            ({(returnPct >= 0 ? '+' : '') + returnPct.toLocaleString('pt-BR', { maximumFractionDigits: 2 })}%)
+          </span>
+        )}
       </p>
+      {footer && <p className="mt-1 text-gray-600 font-medium">{footer}</p>}
     </div>
   )
 }
